@@ -14,8 +14,9 @@ app.use(express.static(path.join(__dirname, "public")));
 
 // --- GAME CONSTANTS ---
 const GRID_SIZE = 16;
-const ATTACK_COOLDOWN = 3000; // ms
 const MAX_PLAYERS_PER_ROOM = 2;
+const SHOOT_COOLDOWN = 1000;        // 1s cooldown
+const PROJECTILE_STEP_MS = 140;     // slower bullet movement
 
 // Static walls shared across rooms
 const WALLS = [
@@ -36,12 +37,14 @@ function isWall(x, y) {
 }
 
 // rooms[roomId] = {
-//   players: { socketId: { x,y,color,name,hp,facing,lastAttackTime,score } },
+//   players: { socketId: { x,y,color,name,hp,facing,score,lastShotTime } },
+//   projectiles: [{ id,x,y,dx,dy,shooterId }],
 //   state: 'waiting' | 'countdown' | 'playing' | 'round_over',
 //   countdownTimeout: Timeout|null,
 //   restartTimeout: Timeout|null
 // }
 const rooms = Object.create(null);
+let nextProjectileId = 1;
 
 const COLORS = [
     "#1e90ff",
@@ -71,6 +74,7 @@ function ensureRoom(roomId) {
     if (!rooms[roomId]) {
         rooms[roomId] = {
             players: {},
+            projectiles: [],
             state: "waiting",
             countdownTimeout: null,
             restartTimeout: null
@@ -139,59 +143,6 @@ function facingToDelta(facing) {
     }
 }
 
-// Wide attack: front + left + right
-function getWideAttackTiles(p) {
-    const f = p.facing || "down";
-    const tiles = [];
-
-    if (f === "up") {
-        tiles.push(
-            { x: p.x, y: p.y - 1 },
-            { x: p.x - 1, y: p.y },
-            { x: p.x + 1, y: p.y }
-        );
-    } else if (f === "down") {
-        tiles.push(
-            { x: p.x, y: p.y + 1 },
-            { x: p.x + 1, y: p.y },
-            { x: p.x - 1, y: p.y }
-        );
-    } else if (f === "left") {
-        tiles.push(
-            { x: p.x - 1, y: p.y },
-            { x: p.x, y: p.y + 1 },
-            { x: p.x, y: p.y - 1 }
-        );
-    } else if (f === "right") {
-        tiles.push(
-            { x: p.x + 1, y: p.y },
-            { x: p.x, y: p.y - 1 },
-            { x: p.x, y: p.y + 1 }
-        );
-    }
-
-    return tiles.filter(t =>
-        t.x >= 0 && t.x < GRID_SIZE && t.y >= 0 && t.y < GRID_SIZE
-    );
-}
-
-// Long attack: up to 3 forward, blocked by walls/bounds
-function getLongAttackTiles(p) {
-    const { dx, dy } = facingToDelta(p.facing || "down");
-    const tiles = [];
-    let x = p.x;
-    let y = p.y;
-
-    for (let i = 0; i < 3; i++) {
-        x += dx;
-        y += dy;
-        if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) break;
-        if (isWall(x, y)) break;
-        tiles.push({ x, y });
-    }
-    return tiles;
-}
-
 // --- ROUND / STATE MANAGEMENT ---
 
 function clearRoomTimers(room) {
@@ -205,11 +156,19 @@ function clearRoomTimers(room) {
     }
 }
 
+function clearProjectiles(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+    room.projectiles = [];
+    io.to(roomId).emit("clearProjectiles");
+}
+
 function startRound(roomId) {
     const room = rooms[roomId];
     if (!room) return;
 
     clearRoomTimers(room);
+    clearProjectiles(roomId);
 
     const ids = Object.keys(room.players);
     if (ids.length < 2) {
@@ -219,7 +178,7 @@ function startRound(roomId) {
         return;
     }
 
-    // Reset players (HP, positions, cooldown)
+    // Reset players for new round (hp, pos, facing; keep score)
     ids.forEach(id => {
         const p = room.players[id];
         const spawn = getRandomSpawn(roomId);
@@ -227,7 +186,7 @@ function startRound(roomId) {
         p.y = spawn.y;
         p.hp = 5;
         p.facing = "down";
-        p.lastAttackTime = 0;
+        p.lastShotTime = 0;
     });
 
     room.state = "countdown";
@@ -263,6 +222,7 @@ function handleRoundEndIfNeeded(roomId) {
 
     room.state = "round_over";
     clearRoomTimers(room);
+    clearProjectiles(roomId);
 
     let winnerId = null;
     if (alive.length === 1) {
@@ -289,6 +249,70 @@ function handleRoundEndIfNeeded(roomId) {
     }, 2000);
 }
 
+// --- PROJECTILE TICK ---
+
+function tickProjectiles() {
+    for (const [roomId, room] of Object.entries(rooms)) {
+        if (room.state !== "playing") continue;
+        if (!room.projectiles || room.projectiles.length === 0) continue;
+
+        const remaining = [];
+
+        for (const proj of room.projectiles) {
+            let nx = proj.x + proj.dx;
+            let ny = proj.y + proj.dy;
+
+            // Out of bounds or wall: destroy
+            if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE || isWall(nx, ny)) {
+                io.to(roomId).emit("projectileDestroy", { id: proj.id });
+                continue;
+            }
+
+            // Check player hit (including shooter if standing there)
+            let hitId = null;
+            for (const [pid, p] of Object.entries(room.players)) {
+                if (p.hp > 0 && p.x === nx && p.y === ny) {
+                    hitId = pid;
+                    break;
+                }
+            }
+
+            if (hitId) {
+                const target = room.players[hitId];
+                target.hp = Math.max(0, target.hp - 1);
+
+                io.to(roomId).emit("healthUpdate", {
+                    hits: [{ id: hitId, hp: target.hp }]
+                });
+
+                io.to(roomId).emit("projectileDestroy", {
+                    id: proj.id,
+                    x: nx,
+                    y: ny
+                });
+
+                handleRoundEndIfNeeded(roomId);
+                continue; // do not keep projectile
+            }
+
+            // Move projectile forward
+            proj.x = nx;
+            proj.y = ny;
+            remaining.push(proj);
+
+            io.to(roomId).emit("projectileUpdate", {
+                id: proj.id,
+                x: nx,
+                y: ny
+            });
+        }
+
+        room.projectiles = remaining;
+    }
+}
+
+setInterval(tickProjectiles, PROJECTILE_STEP_MS);
+
 // --- SOCKET EVENTS ---
 
 io.on("connection", (socket) => {
@@ -313,11 +337,13 @@ io.on("connection", (socket) => {
             x: spawn.x,
             y: spawn.y,
             color,
-            name: name && name.trim() ? name.trim() : `Player-${socket.id.slice(0, 4)}`,
+            name: name && name.trim()
+                ? name.trim()
+                : `Player-${socket.id.slice(0, 4)}`,
             hp: 5,
             facing: "down",
-            lastAttackTime: 0,
-            score: 0
+            score: 0,
+            lastShotTime: 0
         };
 
         room.players[socket.id] = player;
@@ -338,7 +364,6 @@ io.on("connection", (socket) => {
 
         broadcastRoomsUpdate();
 
-        // If we just reached 2 players, start a round (3s countdown)
         if (Object.keys(room.players).length === 2) {
             startRound(roomId);
         }
@@ -380,58 +405,53 @@ io.on("connection", (socket) => {
         });
     });
 
-    socket.on("attack", ({ type }) => {
+    socket.on("shoot", () => {
         const roomId = socket.data.roomId;
         const room = rooms[roomId];
         if (!room || room.state !== "playing") return;
 
-        const attacker = room.players[socket.id];
-        if (!attacker || attacker.hp <= 0) return;
+        const shooter = room.players[socket.id];
+        if (!shooter || shooter.hp <= 0) return;
 
         const now = Date.now();
-        if (now - (attacker.lastAttackTime || 0) < ATTACK_COOLDOWN) {
-            socket.emit("attackCooldown", {
-                remaining: ATTACK_COOLDOWN - (now - attacker.lastAttackTime)
+        if (now - (shooter.lastShotTime || 0) < SHOOT_COOLDOWN) {
+            // Optional feedback
+            socket.emit("shootCooldown", {
+                remaining: SHOOT_COOLDOWN - (now - shooter.lastShotTime)
             });
             return;
         }
+        shooter.lastShotTime = now;
 
-        let tiles = [];
-        if (type === "wide") {
-            tiles = getWideAttackTiles(attacker);
-        } else if (type === "long") {
-            tiles = getLongAttackTiles(attacker);
-        } else {
-            return;
-        }
+        const { dx, dy } = facingToDelta(shooter.facing || "down");
+        if (dx === 0 && dy === 0) return;
 
-        attacker.lastAttackTime = now;
+        const startX = shooter.x + dx;
+        const startY = shooter.y + dy;
 
-        const keySet = new Set(tiles.map(t => `${t.x},${t.y}`));
-        const hitMap = {};
+        // If spawn tile is invalid (out or wall), no projectile
+        if (startX < 0 || startX >= GRID_SIZE || startY < 0 || startY >= GRID_SIZE) return;
+        if (isWall(startX, startY)) return;
 
-        for (const [id, p] of Object.entries(room.players)) {
-            if (id === socket.id) continue;
-            if (p.hp <= 0) continue;
-            const key = `${p.x},${p.y}`;
-            if (keySet.has(key)) {
-                p.hp = Math.max(0, p.hp - 1);
-                hitMap[id] = p.hp;
-            }
-        }
+        const id = nextProjectileId++;
+        const proj = {
+            id,
+            x: startX,
+            y: startY,
+            dx,
+            dy,
+            shooterId: socket.id
+        };
 
-        io.to(roomId).emit("attackEvent", {
-            attackerId: socket.id,
-            type,
-            tiles
+        room.projectiles.push(proj);
+
+        io.to(roomId).emit("projectileSpawn", {
+            id,
+            x: proj.x,
+            y: proj.y,
+            dx: proj.dx,
+            dy: proj.dy
         });
-
-        if (Object.keys(hitMap).length > 0) {
-            io.to(roomId).emit("healthUpdate", {
-                hits: Object.entries(hitMap).map(([id, hp]) => ({ id, hp }))
-            });
-            handleRoundEndIfNeeded(roomId);
-        }
     });
 
     socket.on("disconnect", () => {
@@ -447,6 +467,7 @@ io.on("connection", (socket) => {
         }
 
         clearRoomTimers(room);
+        clearProjectiles(roomId);
 
         const count = Object.keys(room.players).length;
         if (count === 0) {

@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8" />
-    <title>Multiplayer Grid Combat</title>
+    <title>Multiplayer Grid Shooter</title>
     <style>
         body {
             margin: 0;
@@ -200,7 +200,7 @@
         <canvas id="game" width="480" height="480"></canvas>
 
         <div id="cooldownWrapper">
-            <span>Attack CD:</span>
+            <span>Shoot CD:</span>
             <div id="cooldownBarBg">
                 <div id="cooldownBarFill"></div>
             </div>
@@ -211,12 +211,13 @@
         <div id="statusMessage"></div>
 
         <div id="info">
-            Click a room button or enter a name & room and join.
-            Max 2 players per room. When 2 join: 3s countdown, then fight.
-            Arrows: move (horizontal = slide, vertical = jump).<br />
-            Z: wide attack (front + sides). X: long attack (3 tiles forward). Shared 3s cooldown.<br />
-            Kill your opponent: +1 point, 2s freeze, then new 3s countdown.
-            Triangles point the direction you’re facing.
+            Click a room button or enter a room & name, then join.<br />
+            Max 2 players per room. When 2 join: 3s countdown, then fight.<br />
+            Arrows: move (horizontal = slide, vertical = hop).<br />
+            Space: shoot in facing direction. Bullets are slow, rectangular, and stop on first hit (wall or
+            player).<br />
+            If a bullet hits any player (even the shooter), they take 1 damage. Kill your opponent: +1 point, 2s freeze,
+            then new 3s countdown.
         </div>
 
         <div id="announcement"></div>
@@ -230,18 +231,20 @@
         let GRID_SIZE = 16;
         let TILE_SIZE = canvas.width / GRID_SIZE;
         const MOVE_DURATION = 80;
-        const ATTACK_COOLDOWN = 3000;
+        const SHOOT_COOLDOWN = 1000; // must match server
         let JUMP_HEIGHT = TILE_SIZE * 0.35;
 
         const players = {};
         const anims = {};
         let walls = [];
-        const attackAnimations = [];
+
+        // projectiles[id] = { x, y, dx, dy }
+        const projectiles = {};
+        const impactEffects = []; // { x, y, startTime, duration }
 
         let socket = null;
         let joined = false;
         let yourId = null;
-        let lastAttackTime = 0;
         let gameState = "waiting"; // waiting | countdown | playing | round_over
 
         const joinForm = document.getElementById("joinForm");
@@ -249,18 +252,18 @@
         const nameInput = document.getElementById("nameInput");
         const roomLabel = document.getElementById("roomLabel");
         const roomsListDiv = document.getElementById("roomsList");
+        const scoreboardDiv = document.getElementById("scoreboard");
+        const statusMessageDiv = document.getElementById("statusMessage");
+        const announcementDiv = document.getElementById("announcement");
 
         const cooldownWrapper = document.getElementById("cooldownWrapper");
         const cooldownBarFill = document.getElementById("cooldownBarFill");
         const cooldownText = document.getElementById("cooldownText");
 
-        const scoreboardDiv = document.getElementById("scoreboard");
-        const statusMessageDiv = document.getElementById("statusMessage");
-        const announcementDiv = document.getElementById("announcement");
-
-        // Countdown tracking for big center text
         let countdownStartTime = null;
         let countdownDuration = 0;
+
+        let lastShootTimeClient = 0; // client-side cooldown tracking
 
         // --- SOCKET SETUP ---
 
@@ -322,6 +325,8 @@
             for (const id in players) delete players[id];
             Object.assign(players, data.players || {});
 
+            clearProjectilesLocal();
+
             gameState = data.state || "waiting";
             countdownStartTime = null;
             countdownDuration = 0;
@@ -330,6 +335,8 @@
             canvas.style.display = "block";
             joinForm.style.display = "none";
             cooldownWrapper.style.display = "flex";
+
+            lastShootTimeClient = 0;
 
             renderScoreboard();
             renderStatus();
@@ -402,28 +409,63 @@
             });
         });
 
-        socket.on("attackEvent", ({
-            attackerId,
-            type,
-            tiles
+        // Projectiles from server
+        socket.on("projectileSpawn", ({
+            id,
+            x,
+            y,
+            dx,
+            dy
         }) => {
-            if (attackerId === yourId) {
-                lastAttackTime = performance.now();
-            }
-            attackAnimations.push({
-                attackerId,
-                type,
-                tiles,
-                startTime: performance.now(),
-                duration: 140
-            });
+            projectiles[id] = {
+                x,
+                y,
+                dx,
+                dy
+            };
         });
 
-        socket.on("attackCooldown", ({
+        socket.on("projectileUpdate", ({
+            id,
+            x,
+            y
+        }) => {
+            if (projectiles[id]) {
+                projectiles[id].x = x;
+                projectiles[id].y = y;
+            }
+        });
+
+        socket.on("projectileDestroy", ({
+            id,
+            x,
+            y
+        }) => {
+            if (projectiles[id]) {
+                const px = projectiles[id].x;
+                const py = projectiles[id].y;
+                const fx = (typeof x === "number") ? x : px;
+                const fy = (typeof y === "number") ? y : py;
+                impactEffects.push({
+                    x: fx,
+                    y: fy,
+                    startTime: performance.now(),
+                    duration: 120
+                });
+                delete projectiles[id];
+            }
+        });
+
+        socket.on("clearProjectiles", () => {
+            clearProjectilesLocal();
+        });
+
+        socket.on("shootCooldown", ({
             remaining
         }) => {
+            // Sync local CD approx with server
             const now = performance.now();
-            lastAttackTime = now - (ATTACK_COOLDOWN - remaining);
+            lastShootTimeClient = now - (SHOOT_COOLDOWN - remaining);
         });
 
         socket.on("roundState", ({
@@ -438,13 +480,15 @@
                 Object.assign(players, serverPlayers);
             }
 
+            clearProjectilesLocal();
+
             if (state === "waiting") {
                 countdownStartTime = null;
                 countdownDuration = 0;
             } else if (state === "countdown") {
                 countdownDuration = countdown || 3000;
                 countdownStartTime = performance.now();
-                lastAttackTime = 0; // reset local cooldown visual
+                lastShootTimeClient = 0;
             } else if (state === "playing") {
                 countdownStartTime = null;
                 countdownDuration = 0;
@@ -460,6 +504,7 @@
             scores
         }) => {
             gameState = "round_over";
+            clearProjectilesLocal();
 
             if (scores) {
                 Object.entries(scores).forEach(([id, score]) => {
@@ -479,10 +524,8 @@
                 msg = "Round over!";
             }
 
-            // Big centered message
             announcementDiv.textContent = msg;
             announcementDiv.classList.add("visible");
-
             statusMessageDiv.textContent = `${msg} Next round in 2s...`;
         });
 
@@ -495,6 +538,7 @@
             const me = players[yourId];
             if (!me || me.hp <= 0) return;
 
+            // Movement
             if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
                 e.preventDefault();
                 const dir =
@@ -507,27 +551,22 @@
                 return;
             }
 
-            const now = performance.now();
-            const onCooldown = now - lastAttackTime < ATTACK_COOLDOWN;
-
-            if ((e.key === "z" || e.key === "Z") && !onCooldown) {
+            // Shooting with 1s client cooldown
+            if (e.code === "Space") {
                 e.preventDefault();
-                socket.emit("attack", {
-                    type: "wide"
-                });
-                return;
-            }
-
-            if ((e.key === "x" || e.key === "X") && !onCooldown) {
-                e.preventDefault();
-                socket.emit("attack", {
-                    type: "long"
-                });
-                return;
+                const now = performance.now();
+                if (now - lastShootTimeClient < SHOOT_COOLDOWN) return;
+                lastShootTimeClient = now;
+                socket.emit("shoot");
             }
         });
 
         // --- UI HELPERS ---
+
+        function clearProjectilesLocal() {
+            for (const id in projectiles) delete projectiles[id];
+            impactEffects.length = 0;
+        }
 
         function renderScoreboard() {
             const ids = Object.keys(players);
@@ -560,7 +599,6 @@
         }
 
         function updateAnnouncementInstant() {
-            // Non-countdown states handled immediately here.
             if (gameState === "waiting") {
                 announcementDiv.textContent = "Waiting for 2 players...";
                 announcementDiv.classList.add("visible");
@@ -568,24 +606,44 @@
                 announcementDiv.textContent = "";
                 announcementDiv.classList.remove("visible");
             }
-            // countdown is animated per-frame; round_over handled in roundOver.
+            // countdown & round_over are animated separately
         }
 
         function updateAnnouncementDuringCountdown(now) {
             if (gameState !== "countdown" || countdownStartTime === null) return;
-
             const elapsed = now - countdownStartTime;
             let remaining = countdownDuration - elapsed;
             if (remaining < 0) remaining = 0;
-
             const seconds = Math.max(1, Math.ceil(remaining / 1000));
             announcementDiv.textContent = `Round starts in ${seconds}`;
             announcementDiv.classList.add("visible");
-
-            // When server flips to "playing", roundState handler will clear it.
         }
 
-        // --- RENDERING ---
+        // Cooldown UI for shooting
+        function drawCooldown(now) {
+            if (!joined) return;
+
+            if (gameState !== "playing") {
+                cooldownBarFill.style.width = "0";
+                cooldownText.textContent = "Ready";
+                return;
+            }
+
+            const elapsed = now - lastShootTimeClient;
+            const remaining = SHOOT_COOLDOWN - elapsed;
+
+            if (remaining <= 0) {
+                cooldownBarFill.style.width = "0";
+                cooldownText.textContent = "Ready";
+                return;
+            }
+
+            const ratio = Math.max(0, Math.min(1, remaining / SHOOT_COOLDOWN));
+            cooldownBarFill.style.width = `${ratio * 100}%`;
+            cooldownText.textContent = `${(remaining / 1000).toFixed(2)}s`;
+        }
+
+        // --- DRAW HELPERS ---
 
         function drawGrid() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -751,53 +809,51 @@
             }
         }
 
-        function drawAttackEffects(now) {
-            const remaining = [];
-            attackAnimations.forEach(anim => {
-                const t = (now - anim.startTime) / anim.duration;
-                if (t >= 1) return;
+        function drawProjectiles(now) {
+            // Active bullets
+            ctx.save();
+            ctx.fillStyle = "#000";
+            for (const id in projectiles) {
+                const p = projectiles[id];
+                const centerX = p.x * TILE_SIZE + TILE_SIZE / 2;
+                const centerY = p.y * TILE_SIZE + TILE_SIZE / 2;
 
-                const alpha = 1 - t;
-                const isWide = anim.type === "wide";
+                if (p.dx !== 0) {
+                    // Horizontal bullet
+                    const w = TILE_SIZE * 0.6;
+                    const h = TILE_SIZE * 0.16;
+                    ctx.fillRect(centerX - w / 2, centerY - h / 2, w, h);
+                } else if (p.dy !== 0) {
+                    // Vertical bullet
+                    const w = TILE_SIZE * 0.16;
+                    const h = TILE_SIZE * 0.6;
+                    ctx.fillRect(centerX - w / 2, centerY - h / 2, w, h);
+                }
+            }
+            ctx.restore();
 
-                anim.tiles.forEach(tile => {
-                    const x = tile.x * TILE_SIZE;
-                    const y = tile.y * TILE_SIZE;
-                    ctx.save();
-                    ctx.globalAlpha = alpha * 0.7;
-                    ctx.fillStyle = isWide ? "#f1c40f" : "#e74c3c";
-                    ctx.fillRect(x + 3, y + 3, TILE_SIZE - 6, TILE_SIZE - 6);
-                    ctx.restore();
-                });
+            // Impact flashes
+            const keep = [];
+            impactEffects.forEach(effect => {
+                const t = now - effect.startTime;
+                if (t < 0 || t > effect.duration) {
+                    return;
+                }
+                const alpha = 1 - t / effect.duration;
+                const centerX = effect.x * TILE_SIZE + TILE_SIZE / 2;
+                const centerY = effect.y * TILE_SIZE + TILE_SIZE / 2;
+                const size = TILE_SIZE * 0.4;
 
-                remaining.push(anim);
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = "#e74c3c";
+                ctx.fillRect(centerX - size / 2, centerY - size / 2, size, size);
+                ctx.restore();
+
+                keep.push(effect);
             });
-
-            attackAnimations.length = 0;
-            attackAnimations.push(...remaining);
-        }
-
-        function drawCooldown(now) {
-            if (!joined) return;
-
-            if (gameState !== "playing") {
-                cooldownBarFill.style.width = "0";
-                cooldownText.textContent = "Ready";
-                return;
-            }
-
-            const elapsed = now - lastAttackTime;
-            const remaining = ATTACK_COOLDOWN - elapsed;
-
-            if (remaining <= 0) {
-                cooldownBarFill.style.width = "0";
-                cooldownText.textContent = "Ready";
-                return;
-            }
-
-            const ratio = Math.max(0, Math.min(1, remaining / ATTACK_COOLDOWN));
-            cooldownBarFill.style.width = `${ratio * 100}%`;
-            cooldownText.textContent = `${(remaining / 1000).toFixed(1)}s`;
+            impactEffects.length = 0;
+            impactEffects.push(...keep);
         }
 
         // --- MAIN LOOP ---
@@ -813,7 +869,7 @@
             drawGrid();
             drawWalls();
 
-            // Players + movement (vertical hop only)
+            // Players with movement (vertical hop only)
             for (const id in players) {
                 const p = players[id];
                 const anim = anims[id];
@@ -833,10 +889,12 @@
                         const gy = anim.fromY + (anim.toY - anim.fromY) * t;
                         const dx = anim.toX - anim.fromX;
                         const dy = anim.toY - anim.fromY;
+
                         let jumpOffset = 0;
                         if (dy !== 0 && dx === 0) {
                             jumpOffset = -4 * JUMP_HEIGHT * t * (1 - t);
                         }
+
                         drawTrianglePlayer(id, gx, gy, jumpOffset);
                     }
                 } else {
@@ -844,25 +902,23 @@
                 }
             }
 
-            drawAttackEffects(now);
+            drawProjectiles(now);
             drawCooldown(now);
 
-            // Center announcements (only animated here for countdown)
+            // Announcements
             if (gameState === "countdown") {
                 updateAnnouncementDuringCountdown(now);
             } else if (gameState === "playing") {
-                // ensure hidden
                 if (announcementDiv.textContent &&
                     announcementDiv.textContent.startsWith("Round starts in")) {
                     announcementDiv.textContent = "";
                     announcementDiv.classList.remove("visible");
                 }
             } else if (gameState === "waiting") {
-                // ensure visible waiting message
                 announcementDiv.textContent = "Waiting for 2 players...";
                 announcementDiv.classList.add("visible");
             }
-            // round_over handled in roundOver event
+            // round_over overlay handled in roundOver
 
             requestAnimationFrame(gameLoop);
         }
