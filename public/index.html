@@ -125,9 +125,9 @@
         #cooldownBarFill {
             height: 100%;
             width: 0;
-            background: #e74c3c;
+            background: #1e90ff;
             border-radius: 2px;
-            transition: width 0.05s linear;
+            transition: width 0.1s linear;
         }
 
         #scoreboard {
@@ -200,7 +200,7 @@
         <canvas id="game" width="480" height="480"></canvas>
 
         <div id="cooldownWrapper">
-            <span>Shoot CD:</span>
+            <span>Bullets:</span>
             <div id="cooldownBarBg">
                 <div id="cooldownBarFill"></div>
             </div>
@@ -211,13 +211,14 @@
         <div id="statusMessage"></div>
 
         <div id="info">
-            Click a room button or enter a room & name, then join.<br />
+            Click a room button or enter a room &amp; name, then join.<br />
             Max 2 players per room. When 2 join: 3s countdown, then fight.<br />
-            Arrows: move (horizontal = slide, vertical = hop).<br />
-            Space: shoot in facing direction. Bullets are slow, rectangular, and stop on first hit (wall or
-            player).<br />
-            If a bullet hits any player (even the shooter), they take 1 damage. Kill your opponent: +1 point, 2s freeze,
-            then new 3s countdown.
+            Arrows: move (horizontal = slide, vertical = hop). Turning works even if blocked.<br />
+            Space: shoot in facing direction. Each bullet takes 1s to load, up to 3 stored.
+            You can fire whenever you have bullets (no extra cooldown).<br />
+            Bullets are skinny rectangles, move slowly, stop on first hit (wall or player),
+            and deal 1 damage (including to the shooter if hit).
+            If multiple bullets overlap, they’re drawn side by side/stacked so you can count them.
         </div>
 
         <div id="announcement"></div>
@@ -231,21 +232,20 @@
         let GRID_SIZE = 16;
         let TILE_SIZE = canvas.width / GRID_SIZE;
         const MOVE_DURATION = 80;
-        const SHOOT_COOLDOWN = 1000; // must match server
         let JUMP_HEIGHT = TILE_SIZE * 0.35;
+        const MAX_BULLETS = 3;
 
         const players = {};
         const anims = {};
         let walls = [];
 
-        // projectiles[id] = { x, y, dx, dy }
-        const projectiles = {};
-        const impactEffects = []; // { x, y, startTime, duration }
+        const projectiles = {}; // id -> { x,y,dx,dy }
+        const impactEffects = []; // { x,y,startTime,duration }
 
         let socket = null;
         let joined = false;
         let yourId = null;
-        let gameState = "waiting"; // waiting | countdown | playing | round_over
+        let gameState = "waiting";
 
         const joinForm = document.getElementById("joinForm");
         const roomInput = document.getElementById("roomInput");
@@ -262,8 +262,6 @@
 
         let countdownStartTime = null;
         let countdownDuration = 0;
-
-        let lastShootTimeClient = 0; // client-side cooldown tracking
 
         // --- SOCKET SETUP ---
 
@@ -336,8 +334,7 @@
             joinForm.style.display = "none";
             cooldownWrapper.style.display = "flex";
 
-            lastShootTimeClient = 0;
-
+            updateBulletUI();
             renderScoreboard();
             renderStatus();
             updateAnnouncementInstant();
@@ -375,7 +372,8 @@
                     name: `P-${id.slice(0, 4)}`,
                     hp: 5,
                     facing: facing || "down",
-                    score: 0
+                    score: 0,
+                    bulletsLoaded: 0
                 };
             }
 
@@ -386,6 +384,19 @@
                 players[id].x = existing.toX;
                 players[id].y = existing.toY;
                 existing.active = false;
+            }
+
+            if (fromX === toX && fromY === toY) {
+                // Only facing changed
+                anims[id] = {
+                    fromX,
+                    fromY,
+                    toX,
+                    toY,
+                    startTime: performance.now(),
+                    active: false
+                };
+                return;
             }
 
             anims[id] = {
@@ -409,7 +420,31 @@
             });
         });
 
-        // Projectiles from server
+        // Ammo updates
+        socket.on("ammoUpdate", ({
+            id,
+            bullets
+        }) => {
+            if (!players[id]) return;
+            players[id].bulletsLoaded = bullets;
+            if (id === yourId) updateBulletUI();
+        });
+
+        socket.on("ammoBulkUpdate", ({
+            updates
+        }) => {
+            if (!updates) return;
+            updates.forEach(({
+                id,
+                bullets
+            }) => {
+                if (!players[id]) return;
+                players[id].bulletsLoaded = bullets;
+            });
+            updateBulletUI();
+        });
+
+        // Projectiles
         socket.on("projectileSpawn", ({
             id,
             x,
@@ -442,13 +477,11 @@
             y
         }) => {
             if (projectiles[id]) {
-                const px = projectiles[id].x;
-                const py = projectiles[id].y;
-                const fx = (typeof x === "number") ? x : px;
-                const fy = (typeof y === "number") ? y : py;
+                const px = typeof x === "number" ? x : projectiles[id].x;
+                const py = typeof y === "number" ? y : projectiles[id].y;
                 impactEffects.push({
-                    x: fx,
-                    y: fy,
+                    x: px,
+                    y: py,
                     startTime: performance.now(),
                     duration: 120
                 });
@@ -458,14 +491,6 @@
 
         socket.on("clearProjectiles", () => {
             clearProjectilesLocal();
-        });
-
-        socket.on("shootCooldown", ({
-            remaining
-        }) => {
-            // Sync local CD approx with server
-            const now = performance.now();
-            lastShootTimeClient = now - (SHOOT_COOLDOWN - remaining);
         });
 
         socket.on("roundState", ({
@@ -488,12 +513,12 @@
             } else if (state === "countdown") {
                 countdownDuration = countdown || 3000;
                 countdownStartTime = performance.now();
-                lastShootTimeClient = 0;
             } else if (state === "playing") {
                 countdownStartTime = null;
                 countdownDuration = 0;
             }
 
+            updateBulletUI();
             renderScoreboard();
             renderStatus();
             updateAnnouncementInstant();
@@ -508,9 +533,7 @@
 
             if (scores) {
                 Object.entries(scores).forEach(([id, score]) => {
-                    if (!players[id]) players[id] = {
-                        score
-                    };
+                    if (!players[id]) players[id] = {};
                     players[id].score = score;
                 });
             }
@@ -538,7 +561,6 @@
             const me = players[yourId];
             if (!me || me.hp <= 0) return;
 
-            // Movement
             if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
                 e.preventDefault();
                 const dir =
@@ -551,12 +573,10 @@
                 return;
             }
 
-            // Shooting with 1s client cooldown
             if (e.code === "Space") {
                 e.preventDefault();
-                const now = performance.now();
-                if (now - lastShootTimeClient < SHOOT_COOLDOWN) return;
-                lastShootTimeClient = now;
+                const bullets = me.bulletsLoaded ?? 0;
+                if (bullets <= 0) return;
                 socket.emit("shoot");
             }
         });
@@ -566,6 +586,18 @@
         function clearProjectilesLocal() {
             for (const id in projectiles) delete projectiles[id];
             impactEffects.length = 0;
+        }
+
+        function updateBulletUI() {
+            if (!joined) return;
+            const me = players[yourId];
+            const bullets = me && typeof me.bulletsLoaded === "number" ?
+                me.bulletsLoaded :
+                0;
+
+            const ratio = Math.max(0, Math.min(1, bullets / MAX_BULLETS));
+            cooldownBarFill.style.width = `${ratio * 100}%`;
+            cooldownText.textContent = `${bullets}/${MAX_BULLETS}`;
         }
 
         function renderScoreboard() {
@@ -594,7 +626,7 @@
             } else if (gameState === "playing") {
                 statusMessageDiv.textContent = "Fight!";
             } else if (gameState === "round_over") {
-                // handled in roundOver
+                // set in roundOver
             }
         }
 
@@ -606,7 +638,6 @@
                 announcementDiv.textContent = "";
                 announcementDiv.classList.remove("visible");
             }
-            // countdown & round_over are animated separately
         }
 
         function updateAnnouncementDuringCountdown(now) {
@@ -617,30 +648,6 @@
             const seconds = Math.max(1, Math.ceil(remaining / 1000));
             announcementDiv.textContent = `Round starts in ${seconds}`;
             announcementDiv.classList.add("visible");
-        }
-
-        // Cooldown UI for shooting
-        function drawCooldown(now) {
-            if (!joined) return;
-
-            if (gameState !== "playing") {
-                cooldownBarFill.style.width = "0";
-                cooldownText.textContent = "Ready";
-                return;
-            }
-
-            const elapsed = now - lastShootTimeClient;
-            const remaining = SHOOT_COOLDOWN - elapsed;
-
-            if (remaining <= 0) {
-                cooldownBarFill.style.width = "0";
-                cooldownText.textContent = "Ready";
-                return;
-            }
-
-            const ratio = Math.max(0, Math.min(1, remaining / SHOOT_COOLDOWN));
-            cooldownBarFill.style.width = `${ratio * 100}%`;
-            cooldownText.textContent = `${(remaining / 1000).toFixed(2)}s`;
         }
 
         // --- DRAW HELPERS ---
@@ -810,35 +817,85 @@
         }
 
         function drawProjectiles(now) {
-            // Active bullets
-            ctx.save();
-            ctx.fillStyle = "#000";
+            // Group bullets by tile & direction so we can show multiple side by side / stacked
+            const groups = {};
             for (const id in projectiles) {
                 const p = projectiles[id];
-                const centerX = p.x * TILE_SIZE + TILE_SIZE / 2;
-                const centerY = p.y * TILE_SIZE + TILE_SIZE / 2;
-
-                if (p.dx !== 0) {
-                    // Horizontal bullet
-                    const w = TILE_SIZE * 0.6;
-                    const h = TILE_SIZE * 0.16;
-                    ctx.fillRect(centerX - w / 2, centerY - h / 2, w, h);
-                } else if (p.dy !== 0) {
-                    // Vertical bullet
-                    const w = TILE_SIZE * 0.16;
-                    const h = TILE_SIZE * 0.6;
-                    ctx.fillRect(centerX - w / 2, centerY - h / 2, w, h);
+                const key = `${p.x},${p.y},${p.dx},${p.dy}`;
+                if (!groups[key]) {
+                    groups[key] = {
+                        x: p.x,
+                        y: p.y,
+                        dx: p.dx,
+                        dy: p.dy,
+                        count: 0
+                    };
                 }
+                groups[key].count++;
             }
+
+            // Draw grouped bullets
+            ctx.save();
+            ctx.fillStyle = "#000";
+
+            Object.values(groups).forEach(g => {
+                const {
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    count
+                } = g;
+                const centerX = x * TILE_SIZE + TILE_SIZE / 2;
+                const centerY = y * TILE_SIZE + TILE_SIZE / 2;
+
+                const maxCount = Math.max(1, count);
+
+                if (dx !== 0) {
+                    // Horizontal bullets: arranged vertically stacked
+                    const bulletWidth = TILE_SIZE * 0.6;
+                    const bulletHeight = TILE_SIZE * 0.14;
+                    const gap = TILE_SIZE * 0.05;
+                    const totalHeight = maxCount * bulletHeight + (maxCount - 1) * gap;
+                    let startY = centerY - totalHeight / 2;
+
+                    for (let i = 0; i < maxCount; i++) {
+                        ctx.fillRect(
+                            centerX - bulletWidth / 2,
+                            startY,
+                            bulletWidth,
+                            bulletHeight
+                        );
+                        startY += bulletHeight + gap;
+                    }
+                } else if (dy !== 0) {
+                    // Vertical bullets: arranged horizontally side by side
+                    const bulletWidth = TILE_SIZE * 0.14;
+                    const bulletHeight = TILE_SIZE * 0.6;
+                    const gap = TILE_SIZE * 0.05;
+                    const totalWidth = maxCount * bulletWidth + (maxCount - 1) * gap;
+                    let startX = centerX - totalWidth / 2;
+
+                    for (let i = 0; i < maxCount; i++) {
+                        ctx.fillRect(
+                            startX,
+                            centerY - bulletHeight / 2,
+                            bulletWidth,
+                            bulletHeight
+                        );
+                        startX += bulletWidth + gap;
+                    }
+                }
+            });
+
             ctx.restore();
 
             // Impact flashes
             const keep = [];
             impactEffects.forEach(effect => {
                 const t = now - effect.startTime;
-                if (t < 0 || t > effect.duration) {
-                    return;
-                }
+                if (t < 0 || t > effect.duration) return;
+
                 const alpha = 1 - t / effect.duration;
                 const centerX = effect.x * TILE_SIZE + TILE_SIZE / 2;
                 const centerY = effect.y * TILE_SIZE + TILE_SIZE / 2;
@@ -869,7 +926,6 @@
             drawGrid();
             drawWalls();
 
-            // Players with movement (vertical hop only)
             for (const id in players) {
                 const p = players[id];
                 const anim = anims[id];
@@ -903,9 +959,8 @@
             }
 
             drawProjectiles(now);
-            drawCooldown(now);
+            updateBulletUI();
 
-            // Announcements
             if (gameState === "countdown") {
                 updateAnnouncementDuringCountdown(now);
             } else if (gameState === "playing") {
@@ -918,7 +973,6 @@
                 announcementDiv.textContent = "Waiting for 2 players...";
                 announcementDiv.classList.add("visible");
             }
-            // round_over overlay handled in roundOver
 
             requestAnimationFrame(gameLoop);
         }

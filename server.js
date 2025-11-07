@@ -1,4 +1,3 @@
-// server.js
 const path = require("path");
 const express = require("express");
 const http = require("http");
@@ -15,8 +14,9 @@ app.use(express.static(path.join(__dirname, "public")));
 // --- GAME CONSTANTS ---
 const GRID_SIZE = 16;
 const MAX_PLAYERS_PER_ROOM = 2;
-const SHOOT_COOLDOWN = 1000;        // 1s cooldown
-const PROJECTILE_STEP_MS = 140;     // slower bullet movement
+const PROJECTILE_STEP_MS = 140; // bullet travel speed (slower => more reactable)
+const BULLET_RELOAD_MS = 1000;  // 1s per bullet
+const MAX_BULLETS = 3;
 
 // Static walls shared across rooms
 const WALLS = [
@@ -37,11 +37,16 @@ function isWall(x, y) {
 }
 
 // rooms[roomId] = {
-//   players: { socketId: { x,y,color,name,hp,facing,score,lastShotTime } },
+//   players: {
+//     socketId: {
+//       x,y,color,name,hp,facing,score,
+//       bulletsLoaded,lastReloadTime
+//     }
+//   },
 //   projectiles: [{ id,x,y,dx,dy,shooterId }],
-//   state: 'waiting' | 'countdown' | 'playing' | 'round_over',
-//   countdownTimeout: Timeout|null,
-//   restartTimeout: Timeout|null
+//   state: 'waiting'|'countdown'|'playing'|'round_over',
+//   countdownTimeout,
+//   restartTimeout
 // }
 const rooms = Object.create(null);
 let nextProjectileId = 1;
@@ -143,6 +148,40 @@ function facingToDelta(facing) {
     }
 }
 
+// Bullet reloading: 1 bullet / second, up to 3
+function reloadBullets(player) {
+    const now = Date.now();
+    if (player.bulletsLoaded === undefined) {
+        player.bulletsLoaded = MAX_BULLETS;
+        player.lastReloadTime = now;
+        return true;
+    }
+    if (player.bulletsLoaded >= MAX_BULLETS) {
+        player.lastReloadTime = now;
+        return false;
+    }
+    if (!player.lastReloadTime) {
+        player.lastReloadTime = now;
+        return false;
+    }
+
+    const elapsed = now - player.lastReloadTime;
+    if (elapsed < BULLET_RELOAD_MS) return false;
+
+    const bulletsToAdd = Math.floor(elapsed / BULLET_RELOAD_MS);
+    if (bulletsToAdd <= 0) return false;
+
+    const old = player.bulletsLoaded;
+    player.bulletsLoaded = Math.min(
+        MAX_BULLETS,
+        player.bulletsLoaded + bulletsToAdd
+    );
+    const used = player.bulletsLoaded - old;
+    player.lastReloadTime += used * BULLET_RELOAD_MS;
+
+    return player.bulletsLoaded !== old;
+}
+
 // --- ROUND / STATE MANAGEMENT ---
 
 function clearRoomTimers(room) {
@@ -178,7 +217,7 @@ function startRound(roomId) {
         return;
     }
 
-    // Reset players for new round (hp, pos, facing; keep score)
+    const now = Date.now();
     ids.forEach(id => {
         const p = room.players[id];
         const spawn = getRandomSpawn(roomId);
@@ -186,7 +225,8 @@ function startRound(roomId) {
         p.y = spawn.y;
         p.hp = 5;
         p.facing = "down";
-        p.lastShotTime = 0;
+        p.bulletsLoaded = MAX_BULLETS;   // start full each round
+        p.lastReloadTime = now;
     });
 
     room.state = "countdown";
@@ -249,26 +289,43 @@ function handleRoundEndIfNeeded(roomId) {
     }, 2000);
 }
 
-// --- PROJECTILE TICK ---
+// --- PROJECTILE + RELOAD TICK ---
 
-function tickProjectiles() {
+function tickProjectilesAndReload() {
     for (const [roomId, room] of Object.entries(rooms)) {
-        if (room.state !== "playing") continue;
-        if (!room.projectiles || room.projectiles.length === 0) continue;
+        if (!room.players) continue;
+
+        // Reload bullets for all players
+        const ammoUpdates = [];
+        for (const [pid, p] of Object.entries(room.players)) {
+            if (room.state === "playing" || room.state === "countdown") {
+                if (reloadBullets(p)) {
+                    ammoUpdates.push({ id: pid, bullets: p.bulletsLoaded });
+                }
+            }
+        }
+        if (ammoUpdates.length > 0) {
+            io.to(roomId).emit("ammoBulkUpdate", { updates: ammoUpdates });
+        }
+
+        // Only move projectiles while playing
+        if (room.state !== "playing" || !room.projectiles || room.projectiles.length === 0) {
+            continue;
+        }
 
         const remaining = [];
 
         for (const proj of room.projectiles) {
-            let nx = proj.x + proj.dx;
-            let ny = proj.y + proj.dy;
+            const nx = proj.x + proj.dx;
+            const ny = proj.y + proj.dy;
 
-            // Out of bounds or wall: destroy
+            // Out or wall: destroy
             if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE || isWall(nx, ny)) {
-                io.to(roomId).emit("projectileDestroy", { id: proj.id });
+                io.to(roomId).emit("projectileDestroy", { id: proj.id, x: nx, y: ny });
                 continue;
             }
 
-            // Check player hit (including shooter if standing there)
+            // Player hit
             let hitId = null;
             for (const [pid, p] of Object.entries(room.players)) {
                 if (p.hp > 0 && p.x === nx && p.y === ny) {
@@ -292,7 +349,7 @@ function tickProjectiles() {
                 });
 
                 handleRoundEndIfNeeded(roomId);
-                continue; // do not keep projectile
+                continue;
             }
 
             // Move projectile forward
@@ -311,7 +368,7 @@ function tickProjectiles() {
     }
 }
 
-setInterval(tickProjectiles, PROJECTILE_STEP_MS);
+setInterval(tickProjectilesAndReload, PROJECTILE_STEP_MS);
 
 // --- SOCKET EVENTS ---
 
@@ -332,6 +389,7 @@ io.on("connection", (socket) => {
 
         const spawn = getRandomSpawn(roomId);
         const color = getColorForPlayer(roomId);
+        const now = Date.now();
 
         const player = {
             x: spawn.x,
@@ -343,7 +401,8 @@ io.on("connection", (socket) => {
             hp: 5,
             facing: "down",
             score: 0,
-            lastShotTime: 0
+            bulletsLoaded: MAX_BULLETS,
+            lastReloadTime: now
         };
 
         room.players[socket.id] = player;
@@ -384,16 +443,31 @@ io.on("connection", (socket) => {
         else if (direction === "right") dx = 1;
         else return;
 
+        const newFacing = facingFromDelta(dx, dy, player.facing);
         const fromX = player.x;
         const fromY = player.y;
         const toX = fromX + dx;
         const toY = fromY + dy;
 
-        if (isBlocked(roomId, toX, toY, socket.id)) return;
+        // Always rotate, even if can't move
+        player.facing = newFacing;
 
+        if (isBlocked(roomId, toX, toY, socket.id)) {
+            // Just broadcast facing change (no movement)
+            io.to(roomId).emit("playerMove", {
+                id: socket.id,
+                fromX,
+                fromY,
+                toX: fromX,
+                toY: fromY,
+                facing: player.facing
+            });
+            return;
+        }
+
+        // Move + rotate
         player.x = toX;
         player.y = toY;
-        player.facing = facingFromDelta(dx, dy, player.facing);
 
         io.to(roomId).emit("playerMove", {
             id: socket.id,
@@ -413,15 +487,19 @@ io.on("connection", (socket) => {
         const shooter = room.players[socket.id];
         if (!shooter || shooter.hp <= 0) return;
 
-        const now = Date.now();
-        if (now - (shooter.lastShotTime || 0) < SHOOT_COOLDOWN) {
-            // Optional feedback
-            socket.emit("shootCooldown", {
-                remaining: SHOOT_COOLDOWN - (now - shooter.lastShotTime)
+        // Refresh bullets based on time before using one
+        reloadBullets(shooter);
+
+        if (!shooter.bulletsLoaded || shooter.bulletsLoaded <= 0) {
+            // No ammo; just push state so client stays in sync
+            socket.emit("ammoUpdate", {
+                id: socket.id,
+                bullets: shooter.bulletsLoaded || 0
             });
             return;
         }
-        shooter.lastShotTime = now;
+
+        shooter.bulletsLoaded = Math.max(0, shooter.bulletsLoaded - 1);
 
         const { dx, dy } = facingToDelta(shooter.facing || "down");
         if (dx === 0 && dy === 0) return;
@@ -429,11 +507,55 @@ io.on("connection", (socket) => {
         const startX = shooter.x + dx;
         const startY = shooter.y + dy;
 
-        // If spawn tile is invalid (out or wall), no projectile
-        if (startX < 0 || startX >= GRID_SIZE || startY < 0 || startY >= GRID_SIZE) return;
-        if (isWall(startX, startY)) return;
+        // Share updated ammo
+        io.to(roomId).emit("ammoUpdate", {
+            id: socket.id,
+            bullets: shooter.bulletsLoaded
+        });
+
+        // Out or wall directly in front => visual-only or nothing
+        if (startX < 0 || startX >= GRID_SIZE || startY < 0 || startY >= GRID_SIZE || isWall(startX, startY)) {
+            return;
+        }
 
         const id = nextProjectileId++;
+
+        // Point-blank hit check in the first square
+        let hitId = null;
+        for (const [pid, p] of Object.entries(room.players)) {
+            if (p.hp > 0 && p.x === startX && p.y === startY) {
+                hitId = pid;
+                break;
+            }
+        }
+
+        if (hitId) {
+            const target = room.players[hitId];
+            target.hp = Math.max(0, target.hp - 1);
+
+            // Tiny spawn+destroy so clients see impact
+            io.to(roomId).emit("projectileSpawn", {
+                id,
+                x: startX,
+                y: startY,
+                dx,
+                dy
+            });
+            io.to(roomId).emit("projectileDestroy", {
+                id,
+                x: startX,
+                y: startY
+            });
+
+            io.to(roomId).emit("healthUpdate", {
+                hits: [{ id: hitId, hp: target.hp }]
+            });
+
+            handleRoundEndIfNeeded(roomId);
+            return;
+        }
+
+        // Otherwise spawn moving projectile
         const proj = {
             id,
             x: startX,
@@ -442,7 +564,6 @@ io.on("connection", (socket) => {
             dy,
             shooterId: socket.id
         };
-
         room.projectiles.push(proj);
 
         io.to(roomId).emit("projectileSpawn", {
