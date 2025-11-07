@@ -36,13 +36,7 @@ function isWall(x, y) {
     return WALLS.some(w => w.x === x && w.y === y);
 }
 
-// rooms[roomId] = {
-//   players: { id: { x,y,color,name,hp,facing,score,bulletsLoaded,lastReloadTime } },
-//   projectiles: [{ id,x,y,dx,dy,shooterId }],
-//   state: 'waiting'|'countdown'|'playing'|'round_over',
-//   countdownTimeout,
-//   restartTimeout
-// }
+// rooms[roomId] = { players, projectiles, state, countdownTimeout, restartTimeout }
 const rooms = Object.create(null);
 let nextProjectileId = 1;
 
@@ -154,7 +148,6 @@ function reloadBullets(player) {
     }
 
     if (player.bulletsLoaded >= MAX_BULLETS) {
-        // keep this as the reference for next missing bullet
         player.lastReloadTime = now;
         return false;
     }
@@ -283,13 +276,13 @@ function handleRoundEndIfNeeded(roomId) {
     }, 2000);
 }
 
-// --- PROJECTILE + RELOAD TICK ---
+// --- PROJECTILE + RELOAD TICK (pairwise bullet collisions) ---
 
 function tickProjectilesAndReload() {
     for (const [roomId, room] of Object.entries(rooms)) {
         if (!room.players) continue;
 
-        // Reload bullets for all players
+        // Reload bullets
         const ammoUpdates = [];
         for (const [pid, p] of Object.entries(room.players)) {
             if (room.state === "playing" || room.state === "countdown") {
@@ -306,27 +299,126 @@ function tickProjectilesAndReload() {
             io.to(roomId).emit("ammoBulkUpdate", { updates: ammoUpdates });
         }
 
-        // Only move projectiles while playing
         if (room.state !== "playing" || !room.projectiles || room.projectiles.length === 0) {
             continue;
         }
 
+        const projs = room.projectiles;
+
+        // Precompute intended next positions
+        const extended = projs.map(p => ({
+            ...p,
+            nx: p.x + p.dx,
+            ny: p.y + p.dy
+        }));
+
+        const toRemove = new Set();
+
+        // 1) Crossing collisions (swap positions on adjacent tiles)
+        // Use segment keys to pair bullets from opposite directions.
+        const segMap = {};
+        for (const p of extended) {
+            if (p.dx === 0 && p.dy === 0) continue;
+
+            if (p.dx !== 0) {
+                // horizontal move: segment between x and nx at row y
+                const xMin = Math.min(p.x, p.nx);
+                const key = `h:${xMin},${p.y}`;
+                (segMap[key] ||= []).push(p);
+            } else {
+                // vertical move: segment between y and ny at column x
+                const yMin = Math.min(p.y, p.ny);
+                const key = `v:${p.x},${yMin}`;
+                (segMap[key] ||= []).push(p);
+            }
+        }
+
+        for (const key in segMap) {
+            const list = segMap[key];
+            if (list.length < 2) continue;
+
+            let pos = [];
+            let neg = [];
+
+            if (key.startsWith("h:")) {
+                pos = list.filter(p => p.dx > 0);
+                neg = list.filter(p => p.dx < 0);
+            } else {
+                pos = list.filter(p => p.dy > 0);
+                neg = list.filter(p => p.dy < 0);
+            }
+
+            const pairs = Math.min(pos.length, neg.length);
+            for (let i = 0; i < pairs; i++) {
+                toRemove.add(pos[i].id);
+                toRemove.add(neg[i].id);
+            }
+        }
+
+        // 2) Same-tile collisions (multiple bullets land on same nx,ny)
+        // Pair opposite directions; each pair cancels ONE bullet from each side.
+        const tileMap = {};
+        for (const p of extended) {
+            if (toRemove.has(p.id)) continue; // already removed by crossing
+            const key = `${p.nx},${p.ny}`;
+            (tileMap[key] ||= []).push(p);
+        }
+
+        function pairCancel(aArr, bArr) {
+            const pairs = Math.min(aArr.length, bArr.length);
+            for (let i = 0; i < pairs; i++) {
+                toRemove.add(aArr[i].id);
+                toRemove.add(bArr[i].id);
+            }
+        }
+
+        for (const key in tileMap) {
+            const g = tileMap[key];
+            if (g.length < 2) continue;
+
+            const left = [];
+            const right = [];
+            const up = [];
+            const down = [];
+
+            for (const p of g) {
+                if (p.dx === -1) left.push(p);
+                else if (p.dx === 1) right.push(p);
+                else if (p.dy === -1) up.push(p);
+                else if (p.dy === 1) down.push(p);
+            }
+
+            pairCancel(left, right); // horizontal face-off
+            pairCancel(up, down);    // vertical face-off
+        }
+
+        // 3) Apply removals + normal movement / hits
         const remaining = [];
 
-        for (const proj of room.projectiles) {
-            const nx = proj.x + proj.dx;
-            const ny = proj.y + proj.dy;
+        for (const p of extended) {
+            if (toRemove.has(p.id)) {
+                // Destroy at current position for a quick "pop"
+                io.to(roomId).emit("projectileDestroy", {
+                    id: p.id,
+                    x: p.x,
+                    y: p.y
+                });
+                continue;
+            }
 
-            // Out or wall => destroy
+            const nx = p.nx;
+            const ny = p.ny;
+
+            // Out-of-bounds or wall
             if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE || isWall(nx, ny)) {
-                io.to(roomId).emit("projectileDestroy", { id: proj.id, x: nx, y: ny });
+                io.to(roomId).emit("projectileDestroy", { id: p.id, x: nx, y: ny });
                 continue;
             }
 
             // Player hit
             let hitId = null;
-            for (const [pid, p] of Object.entries(room.players)) {
-                if (p.hp > 0 && p.x === nx && p.y === ny) {
+            for (const [pid, pl] of Object.entries(room.players)) {
+                if (pl.hp > 0 && pl.x === nx && pl.y === ny) {
                     hitId = pid;
                     break;
                 }
@@ -341,7 +433,7 @@ function tickProjectilesAndReload() {
                 });
 
                 io.to(roomId).emit("projectileDestroy", {
-                    id: proj.id,
+                    id: p.id,
                     x: nx,
                     y: ny
                 });
@@ -350,13 +442,14 @@ function tickProjectilesAndReload() {
                 continue;
             }
 
-            // Move projectile
-            proj.x = nx;
-            proj.y = ny;
-            remaining.push(proj);
+            // Move projectile forward
+            const moved = { ...p, x: nx, y: ny };
+            delete moved.nx;
+            delete moved.ny;
+            remaining.push(moved);
 
             io.to(roomId).emit("projectileUpdate", {
-                id: proj.id,
+                id: p.id,
                 x: nx,
                 y: ny
             });
@@ -549,7 +642,7 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Normal flying projectile
+        // Normal projectile
         const proj = {
             id,
             x: startX,
