@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Multiplayer Grid Combat</title>
+    <style>
+        body {
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #f5f5f5;
+            font-family: sans-serif;
+        }
+
+        #wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: center;
+            position: relative;
+        }
+
+        #topRow {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        #joinForm {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            font-size: 14px;
+        }
+
+        #joinForm input {
+            padding: 4px 6px;
+            font-size: 13px;
+        }
+
+        #joinForm button {
+            padding: 4px 10px;
+            font-size: 13px;
+            border: none;
+            border-radius: 4px;
+            background: #1e90ff;
+            color: #fff;
+            cursor: pointer;
+        }
+
+        #joinForm button:hover {
+            opacity: 0.9;
+        }
+
+        #roomsContainer {
+            font-size: 12px;
+            color: #333;
+            min-width: 160px;
+        }
+
+        #roomsTitle {
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        #roomsList {
+            border: 1px solid #ccc;
+            background: #fff;
+            padding: 4px;
+            max-height: 140px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        #roomsList button {
+            width: 100%;
+            padding: 2px 4px;
+            font-size: 11px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            background: #f7f7f7;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        #roomsList button:hover {
+            background: #e8f2ff;
+        }
+
+        #roomLabel {
+            font-size: 13px;
+            color: #555;
+            min-height: 16px;
+        }
+
+        canvas {
+            border: 1px solid #999;
+            background: #ffffff;
+            display: none;
+        }
+
+        #cooldownWrapper {
+            width: 480px;
+            height: 10px;
+            font-size: 9px;
+            color: #555;
+            display: none;
+            align-items: center;
+            gap: 4px;
+        }
+
+        #cooldownBarBg {
+            flex: 1;
+            height: 4px;
+            background: #ddd;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        #cooldownBarFill {
+            height: 100%;
+            width: 0;
+            background: #e74c3c;
+            border-radius: 2px;
+            transition: width 0.05s linear;
+        }
+
+        #scoreboard {
+            font-size: 11px;
+            color: #333;
+            min-height: 14px;
+        }
+
+        #statusMessage {
+            font-size: 11px;
+            color: #666;
+            min-height: 14px;
+        }
+
+        #info {
+            font-size: 11px;
+            color: #333;
+            max-width: 480px;
+            text-align: center;
+        }
+
+        /* Centered announcement overlay */
+        #announcement {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 8px 16px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.9);
+            font-size: 28px;
+            font-weight: 700;
+            color: #222;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 999;
+            min-width: 260px;
+        }
+
+        #announcement.visible {
+            opacity: 1;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="wrapper">
+        <div id="topRow">
+            <form id="joinForm">
+                <span>Room:</span>
+                <input id="roomInput" placeholder="e.g. arena-1" />
+                <span>Name:</span>
+                <input id="nameInput" placeholder="Your name" />
+                <button type="submit">Join</button>
+            </form>
+
+            <div id="roomsContainer">
+                <div id="roomsTitle">Active Rooms</div>
+                <div id="roomsList">
+                    <div>Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="roomLabel"></div>
+
+        <canvas id="game" width="480" height="480"></canvas>
+
+        <div id="cooldownWrapper">
+            <span>Attack CD:</span>
+            <div id="cooldownBarBg">
+                <div id="cooldownBarFill"></div>
+            </div>
+            <span id="cooldownText"></span>
+        </div>
+
+        <div id="scoreboard"></div>
+        <div id="statusMessage"></div>
+
+        <div id="info">
+            Click a room button or enter a name & room and join.
+            Max 2 players per room. When 2 join: 3s countdown, then fight.
+            Arrows: move (horizontal = slide, vertical = jump).<br />
+            Z: wide attack (front + sides). X: long attack (3 tiles forward). Shared 3s cooldown.<br />
+            Kill your opponent: +1 point, 2s freeze, then new 3s countdown.
+            Triangles point the direction you’re facing.
+        </div>
+
+        <div id="announcement"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const canvas = document.getElementById("game");
+        const ctx = canvas.getContext("2d");
+
+        let GRID_SIZE = 16;
+        let TILE_SIZE = canvas.width / GRID_SIZE;
+        const MOVE_DURATION = 80;
+        const ATTACK_COOLDOWN = 3000;
+        let JUMP_HEIGHT = TILE_SIZE * 0.35;
+
+        const players = {};
+        const anims = {};
+        let walls = [];
+        const attackAnimations = [];
+
+        let socket = null;
+        let joined = false;
+        let yourId = null;
+        let lastAttackTime = 0;
+        let gameState = "waiting"; // waiting | countdown | playing | round_over
+
+        const joinForm = document.getElementById("joinForm");
+        const roomInput = document.getElementById("roomInput");
+        const nameInput = document.getElementById("nameInput");
+        const roomLabel = document.getElementById("roomLabel");
+        const roomsListDiv = document.getElementById("roomsList");
+
+        const cooldownWrapper = document.getElementById("cooldownWrapper");
+        const cooldownBarFill = document.getElementById("cooldownBarFill");
+        const cooldownText = document.getElementById("cooldownText");
+
+        const scoreboardDiv = document.getElementById("scoreboard");
+        const statusMessageDiv = document.getElementById("statusMessage");
+        const announcementDiv = document.getElementById("announcement");
+
+        // Countdown tracking for big center text
+        let countdownStartTime = null;
+        let countdownDuration = 0;
+
+        // --- SOCKET SETUP ---
+
+        socket = io();
+
+        socket.on("roomsUpdate", (rooms) => {
+            if (!joined) renderRoomsList(rooms);
+        });
+
+        socket.on("roomFull", ({
+            roomId
+        }) => {
+            alert(`Room "${roomId}" is full (2 players max).`);
+        });
+
+        joinForm.addEventListener("submit", (e) => {
+            e.preventDefault();
+            if (joined) return;
+            const roomId = roomInput.value.trim() || "lobby";
+            const name = nameInput.value.trim() || "";
+            socket.emit("joinRoom", {
+                roomId,
+                name
+            });
+        });
+
+        function renderRoomsList(rooms) {
+            roomsListDiv.innerHTML = "";
+            if (!rooms || rooms.length === 0) {
+                roomsListDiv.innerHTML = "<div>No active rooms yet</div>";
+                return;
+            }
+            rooms
+                .sort((a, b) => a.roomId.localeCompare(b.roomId))
+                .forEach(r => {
+                    const btn = document.createElement("button");
+                    btn.textContent = `${r.roomId} (${r.count}/2)`;
+                    btn.onclick = () => {
+                        if (joined) return;
+                        const name = nameInput.value.trim() || "";
+                        socket.emit("joinRoom", {
+                            roomId: r.roomId,
+                            name
+                        });
+                    };
+                    roomsListDiv.appendChild(btn);
+                });
+        }
+
+        socket.on("currentState", (data) => {
+            joined = true;
+            yourId = data.yourId;
+
+            GRID_SIZE = data.gridSize || GRID_SIZE;
+            TILE_SIZE = canvas.width / GRID_SIZE;
+            JUMP_HEIGHT = TILE_SIZE * 0.35;
+            walls = data.walls || [];
+
+            for (const id in players) delete players[id];
+            Object.assign(players, data.players || {});
+
+            gameState = data.state || "waiting";
+            countdownStartTime = null;
+            countdownDuration = 0;
+
+            roomLabel.textContent = `Room: ${data.roomId}`;
+            canvas.style.display = "block";
+            joinForm.style.display = "none";
+            cooldownWrapper.style.display = "flex";
+
+            renderScoreboard();
+            renderStatus();
+            updateAnnouncementInstant();
+        });
+
+        socket.on("playerJoined", ({
+            id,
+            player
+        }) => {
+            players[id] = player;
+            renderScoreboard();
+        });
+
+        socket.on("playerLeft", ({
+            id
+        }) => {
+            delete players[id];
+            delete anims[id];
+            renderScoreboard();
+        });
+
+        socket.on("playerMove", ({
+            id,
+            fromX,
+            fromY,
+            toX,
+            toY,
+            facing
+        }) => {
+            if (!players[id]) {
+                players[id] = {
+                    x: toX,
+                    y: toY,
+                    color: "#000",
+                    name: `P-${id.slice(0, 4)}`,
+                    hp: 5,
+                    facing: facing || "down",
+                    score: 0
+                };
+            }
+
+            if (facing) players[id].facing = facing;
+
+            const existing = anims[id];
+            if (existing && existing.active) {
+                players[id].x = existing.toX;
+                players[id].y = existing.toY;
+                existing.active = false;
+            }
+
+            anims[id] = {
+                fromX,
+                fromY,
+                toX,
+                toY,
+                startTime: performance.now(),
+                active: true
+            };
+        });
+
+        socket.on("healthUpdate", ({
+            hits
+        }) => {
+            hits.forEach(({
+                id,
+                hp
+            }) => {
+                if (players[id]) players[id].hp = hp;
+            });
+        });
+
+        socket.on("attackEvent", ({
+            attackerId,
+            type,
+            tiles
+        }) => {
+            if (attackerId === yourId) {
+                lastAttackTime = performance.now();
+            }
+            attackAnimations.push({
+                attackerId,
+                type,
+                tiles,
+                startTime: performance.now(),
+                duration: 140
+            });
+        });
+
+        socket.on("attackCooldown", ({
+            remaining
+        }) => {
+            const now = performance.now();
+            lastAttackTime = now - (ATTACK_COOLDOWN - remaining);
+        });
+
+        socket.on("roundState", ({
+            state,
+            countdown,
+            players: serverPlayers
+        }) => {
+            gameState = state;
+
+            if (serverPlayers) {
+                for (const id in players) delete players[id];
+                Object.assign(players, serverPlayers);
+            }
+
+            if (state === "waiting") {
+                countdownStartTime = null;
+                countdownDuration = 0;
+            } else if (state === "countdown") {
+                countdownDuration = countdown || 3000;
+                countdownStartTime = performance.now();
+                lastAttackTime = 0; // reset local cooldown visual
+            } else if (state === "playing") {
+                countdownStartTime = null;
+                countdownDuration = 0;
+            }
+
+            renderScoreboard();
+            renderStatus();
+            updateAnnouncementInstant();
+        });
+
+        socket.on("roundOver", ({
+            winnerId,
+            scores
+        }) => {
+            gameState = "round_over";
+
+            if (scores) {
+                Object.entries(scores).forEach(([id, score]) => {
+                    if (!players[id]) players[id] = {
+                        score
+                    };
+                    players[id].score = score;
+                });
+            }
+            renderScoreboard();
+
+            let msg;
+            if (winnerId && players[winnerId]) {
+                const name = players[winnerId].name || "Player";
+                msg = `${name} wins this round!`;
+            } else {
+                msg = "Round over!";
+            }
+
+            // Big centered message
+            announcementDiv.textContent = msg;
+            announcementDiv.classList.add("visible");
+
+            statusMessageDiv.textContent = `${msg} Next round in 2s...`;
+        });
+
+        // --- INPUT ---
+
+        window.addEventListener("keydown", (e) => {
+            if (!joined || !socket) return;
+            if (gameState !== "playing") return;
+
+            const me = players[yourId];
+            if (!me || me.hp <= 0) return;
+
+            if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+                e.preventDefault();
+                const dir =
+                    e.key === "ArrowUp" ? "up" :
+                    e.key === "ArrowDown" ? "down" :
+                    e.key === "ArrowLeft" ? "left" : "right";
+                socket.emit("move", {
+                    direction: dir
+                });
+                return;
+            }
+
+            const now = performance.now();
+            const onCooldown = now - lastAttackTime < ATTACK_COOLDOWN;
+
+            if ((e.key === "z" || e.key === "Z") && !onCooldown) {
+                e.preventDefault();
+                socket.emit("attack", {
+                    type: "wide"
+                });
+                return;
+            }
+
+            if ((e.key === "x" || e.key === "X") && !onCooldown) {
+                e.preventDefault();
+                socket.emit("attack", {
+                    type: "long"
+                });
+                return;
+            }
+        });
+
+        // --- UI HELPERS ---
+
+        function renderScoreboard() {
+            const ids = Object.keys(players);
+            if (!ids.length) {
+                scoreboardDiv.textContent = "";
+                return;
+            }
+            const parts = ids.map(id => {
+                const p = players[id];
+                if (!p) return "";
+                const name = p.name || id.slice(0, 4);
+                const score = p.score || 0;
+                return `${name}: ${score}`;
+            }).filter(Boolean);
+            scoreboardDiv.textContent = parts.length ?
+                "Score • " + parts.join(" | ") :
+                "";
+        }
+
+        function renderStatus() {
+            if (gameState === "waiting") {
+                statusMessageDiv.textContent = "Waiting for 2 players...";
+            } else if (gameState === "countdown") {
+                statusMessageDiv.textContent = "Round starting...";
+            } else if (gameState === "playing") {
+                statusMessageDiv.textContent = "Fight!";
+            } else if (gameState === "round_over") {
+                // handled in roundOver
+            }
+        }
+
+        function updateAnnouncementInstant() {
+            // Non-countdown states handled immediately here.
+            if (gameState === "waiting") {
+                announcementDiv.textContent = "Waiting for 2 players...";
+                announcementDiv.classList.add("visible");
+            } else if (gameState === "playing") {
+                announcementDiv.textContent = "";
+                announcementDiv.classList.remove("visible");
+            }
+            // countdown is animated per-frame; round_over handled in roundOver.
+        }
+
+        function updateAnnouncementDuringCountdown(now) {
+            if (gameState !== "countdown" || countdownStartTime === null) return;
+
+            const elapsed = now - countdownStartTime;
+            let remaining = countdownDuration - elapsed;
+            if (remaining < 0) remaining = 0;
+
+            const seconds = Math.max(1, Math.ceil(remaining / 1000));
+            announcementDiv.textContent = `Round starts in ${seconds}`;
+            announcementDiv.classList.add("visible");
+
+            // When server flips to "playing", roundState handler will clear it.
+        }
+
+        // --- RENDERING ---
+
+        function drawGrid() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = "#e0e0e0";
+
+            for (let i = 0; i <= GRID_SIZE; i++) {
+                const x = i * TILE_SIZE;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+
+            for (let i = 0; i <= GRID_SIZE; i++) {
+                const y = i * TILE_SIZE;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+        }
+
+        function drawWalls() {
+            if (!walls) return;
+            ctx.fillStyle = "#d0d0d0";
+            walls.forEach(w => {
+                ctx.fillRect(
+                    w.x * TILE_SIZE,
+                    w.y * TILE_SIZE,
+                    TILE_SIZE,
+                    TILE_SIZE
+                );
+            });
+        }
+
+        function drawTrianglePlayer(id, gridX, gridY, jumpOffset = 0) {
+            const p = players[id];
+            if (!p) return;
+
+            const padding = TILE_SIZE * 0.18;
+            const px = gridX * TILE_SIZE + padding;
+            const py = gridY * TILE_SIZE + padding + jumpOffset;
+            const size = TILE_SIZE - padding * 2;
+            const cx = px + size / 2;
+            const cy = py + size / 2;
+
+            let a, b, c;
+            switch (p.facing || "down") {
+                case "up":
+                    a = {
+                        x: cx,
+                        y: py
+                    };
+                    b = {
+                        x: px,
+                        y: py + size
+                    };
+                    c = {
+                        x: px + size,
+                        y: py + size
+                    };
+                    break;
+                case "down":
+                    a = {
+                        x: cx,
+                        y: py + size
+                    };
+                    b = {
+                        x: px,
+                        y: py
+                    };
+                    c = {
+                        x: px + size,
+                        y: py
+                    };
+                    break;
+                case "left":
+                    a = {
+                        x: px,
+                        y: cy
+                    };
+                    b = {
+                        x: px + size,
+                        y: py
+                    };
+                    c = {
+                        x: px + size,
+                        y: py + size
+                    };
+                    break;
+                case "right":
+                default:
+                    a = {
+                        x: px + size,
+                        y: cy
+                    };
+                    b = {
+                        x: px,
+                        y: py
+                    };
+                    c = {
+                        x: px,
+                        y: py + size
+                    };
+                    break;
+            }
+
+            // Shadow
+            ctx.save();
+            ctx.fillStyle = "rgba(0,0,0,0.18)";
+            ctx.beginPath();
+            ctx.moveTo(a.x + 2, a.y + 2);
+            ctx.lineTo(b.x + 2, b.y + 2);
+            ctx.lineTo(c.x + 2, c.y + 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            // Body
+            const baseColor = p.color || "#1e90ff";
+            ctx.fillStyle = p.hp > 0 ? baseColor : "#7f8c8d";
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.lineTo(c.x, c.y);
+            ctx.closePath();
+            ctx.fill();
+
+            // Outline for your player
+            if (id === yourId) {
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "#000";
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+                ctx.lineTo(c.x, c.y);
+                ctx.closePath();
+                ctx.stroke();
+            }
+
+            // HP bar
+            const maxHp = 5;
+            const hpRatio = Math.max(0, (p.hp || 0)) / maxHp;
+            const barWidth = size;
+            const barHeight = 3;
+            const barX = px;
+            const barY = py + size + 2;
+
+            ctx.fillStyle = "#ccc";
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+            if (hpRatio > 0) {
+                ctx.fillStyle = "#27ae60";
+                ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+            }
+
+            // Name
+            if (p.name) {
+                ctx.font = "9px sans-serif";
+                ctx.fillStyle = "#333";
+                ctx.textAlign = "center";
+                ctx.fillText(p.name, cx, py - 3);
+            }
+        }
+
+        function drawAttackEffects(now) {
+            const remaining = [];
+            attackAnimations.forEach(anim => {
+                const t = (now - anim.startTime) / anim.duration;
+                if (t >= 1) return;
+
+                const alpha = 1 - t;
+                const isWide = anim.type === "wide";
+
+                anim.tiles.forEach(tile => {
+                    const x = tile.x * TILE_SIZE;
+                    const y = tile.y * TILE_SIZE;
+                    ctx.save();
+                    ctx.globalAlpha = alpha * 0.7;
+                    ctx.fillStyle = isWide ? "#f1c40f" : "#e74c3c";
+                    ctx.fillRect(x + 3, y + 3, TILE_SIZE - 6, TILE_SIZE - 6);
+                    ctx.restore();
+                });
+
+                remaining.push(anim);
+            });
+
+            attackAnimations.length = 0;
+            attackAnimations.push(...remaining);
+        }
+
+        function drawCooldown(now) {
+            if (!joined) return;
+
+            if (gameState !== "playing") {
+                cooldownBarFill.style.width = "0";
+                cooldownText.textContent = "Ready";
+                return;
+            }
+
+            const elapsed = now - lastAttackTime;
+            const remaining = ATTACK_COOLDOWN - elapsed;
+
+            if (remaining <= 0) {
+                cooldownBarFill.style.width = "0";
+                cooldownText.textContent = "Ready";
+                return;
+            }
+
+            const ratio = Math.max(0, Math.min(1, remaining / ATTACK_COOLDOWN));
+            cooldownBarFill.style.width = `${ratio * 100}%`;
+            cooldownText.textContent = `${(remaining / 1000).toFixed(1)}s`;
+        }
+
+        // --- MAIN LOOP ---
+
+        function gameLoop(timestamp) {
+            if (!joined) {
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            const now = timestamp || performance.now();
+
+            drawGrid();
+            drawWalls();
+
+            // Players + movement (vertical hop only)
+            for (const id in players) {
+                const p = players[id];
+                const anim = anims[id];
+
+                if (anim && anim.active) {
+                    const elapsed = now - anim.startTime;
+                    let t = elapsed / MOVE_DURATION;
+
+                    if (t >= 1) {
+                        t = 1;
+                        anim.active = false;
+                        p.x = anim.toX;
+                        p.y = anim.toY;
+                        drawTrianglePlayer(id, p.x, p.y, 0);
+                    } else {
+                        const gx = anim.fromX + (anim.toX - anim.fromX) * t;
+                        const gy = anim.fromY + (anim.toY - anim.fromY) * t;
+                        const dx = anim.toX - anim.fromX;
+                        const dy = anim.toY - anim.fromY;
+                        let jumpOffset = 0;
+                        if (dy !== 0 && dx === 0) {
+                            jumpOffset = -4 * JUMP_HEIGHT * t * (1 - t);
+                        }
+                        drawTrianglePlayer(id, gx, gy, jumpOffset);
+                    }
+                } else {
+                    drawTrianglePlayer(id, p.x, p.y, 0);
+                }
+            }
+
+            drawAttackEffects(now);
+            drawCooldown(now);
+
+            // Center announcements (only animated here for countdown)
+            if (gameState === "countdown") {
+                updateAnnouncementDuringCountdown(now);
+            } else if (gameState === "playing") {
+                // ensure hidden
+                if (announcementDiv.textContent &&
+                    announcementDiv.textContent.startsWith("Round starts in")) {
+                    announcementDiv.textContent = "";
+                    announcementDiv.classList.remove("visible");
+                }
+            } else if (gameState === "waiting") {
+                // ensure visible waiting message
+                announcementDiv.textContent = "Waiting for 2 players...";
+                announcementDiv.classList.add("visible");
+            }
+            // round_over handled in roundOver event
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+
+</html>
