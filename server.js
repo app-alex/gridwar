@@ -14,11 +14,11 @@ app.use(express.static(path.join(__dirname, "public")));
 // --- GAME CONSTANTS ---
 const GRID_SIZE = 16;
 const MAX_PLAYERS_PER_ROOM = 2;
-const PROJECTILE_STEP_MS = 140; // bullet travel speed (slower => more reactable)
-const BULLET_RELOAD_MS = 1000;  // 1s per bullet
+const PROJECTILE_STEP_MS = 140;   // bullet travel tick
+const BULLET_RELOAD_MS = 1000;    // 1s per bullet
 const MAX_BULLETS = 3;
 
-// Static walls shared across rooms
+// Static walls
 const WALLS = [
     { x: 7, y: 6 }, { x: 7, y: 7 }, { x: 7, y: 8 },
     { x: 6, y: 7 }, { x: 8, y: 7 },
@@ -37,12 +37,7 @@ function isWall(x, y) {
 }
 
 // rooms[roomId] = {
-//   players: {
-//     socketId: {
-//       x,y,color,name,hp,facing,score,
-//       bulletsLoaded,lastReloadTime
-//     }
-//   },
+//   players: { id: { x,y,color,name,hp,facing,score,bulletsLoaded,lastReloadTime } },
 //   projectiles: [{ id,x,y,dx,dy,shooterId }],
 //   state: 'waiting'|'countdown'|'playing'|'round_over',
 //   countdownTimeout,
@@ -148,7 +143,8 @@ function facingToDelta(facing) {
     }
 }
 
-// Bullet reloading: 1 bullet / second, up to 3
+// --- BULLET RELOAD ---
+
 function reloadBullets(player) {
     const now = Date.now();
     if (player.bulletsLoaded === undefined) {
@@ -156,26 +152,23 @@ function reloadBullets(player) {
         player.lastReloadTime = now;
         return true;
     }
+
     if (player.bulletsLoaded >= MAX_BULLETS) {
+        // keep this as the reference for next missing bullet
         player.lastReloadTime = now;
         return false;
     }
-    if (!player.lastReloadTime) {
-        player.lastReloadTime = now;
-        return false;
-    }
+
+    if (!player.lastReloadTime) player.lastReloadTime = now;
 
     const elapsed = now - player.lastReloadTime;
     if (elapsed < BULLET_RELOAD_MS) return false;
 
-    const bulletsToAdd = Math.floor(elapsed / BULLET_RELOAD_MS);
-    if (bulletsToAdd <= 0) return false;
+    const toAdd = Math.floor(elapsed / BULLET_RELOAD_MS);
+    if (toAdd <= 0) return false;
 
     const old = player.bulletsLoaded;
-    player.bulletsLoaded = Math.min(
-        MAX_BULLETS,
-        player.bulletsLoaded + bulletsToAdd
-    );
+    player.bulletsLoaded = Math.min(MAX_BULLETS, player.bulletsLoaded + toAdd);
     const used = player.bulletsLoaded - old;
     player.lastReloadTime += used * BULLET_RELOAD_MS;
 
@@ -218,6 +211,7 @@ function startRound(roomId) {
     }
 
     const now = Date.now();
+
     ids.forEach(id => {
         const p = room.players[id];
         const spawn = getRandomSpawn(roomId);
@@ -225,7 +219,7 @@ function startRound(roomId) {
         p.y = spawn.y;
         p.hp = 5;
         p.facing = "down";
-        p.bulletsLoaded = MAX_BULLETS;   // start full each round
+        p.bulletsLoaded = MAX_BULLETS;
         p.lastReloadTime = now;
     });
 
@@ -300,7 +294,11 @@ function tickProjectilesAndReload() {
         for (const [pid, p] of Object.entries(room.players)) {
             if (room.state === "playing" || room.state === "countdown") {
                 if (reloadBullets(p)) {
-                    ammoUpdates.push({ id: pid, bullets: p.bulletsLoaded });
+                    ammoUpdates.push({
+                        id: pid,
+                        bullets: p.bulletsLoaded,
+                        lastReloadTime: p.lastReloadTime
+                    });
                 }
             }
         }
@@ -319,7 +317,7 @@ function tickProjectilesAndReload() {
             const nx = proj.x + proj.dx;
             const ny = proj.y + proj.dy;
 
-            // Out or wall: destroy
+            // Out or wall => destroy
             if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE || isWall(nx, ny)) {
                 io.to(roomId).emit("projectileDestroy", { id: proj.id, x: nx, y: ny });
                 continue;
@@ -352,7 +350,7 @@ function tickProjectilesAndReload() {
                 continue;
             }
 
-            // Move projectile forward
+            // Move projectile
             proj.x = nx;
             proj.y = ny;
             remaining.push(proj);
@@ -449,11 +447,10 @@ io.on("connection", (socket) => {
         const toX = fromX + dx;
         const toY = fromY + dy;
 
-        // Always rotate, even if can't move
+        // Always rotate, even if blocked
         player.facing = newFacing;
 
         if (isBlocked(roomId, toX, toY, socket.id)) {
-            // Just broadcast facing change (no movement)
             io.to(roomId).emit("playerMove", {
                 id: socket.id,
                 fromX,
@@ -465,7 +462,6 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Move + rotate
         player.x = toX;
         player.y = toY;
 
@@ -487,19 +483,25 @@ io.on("connection", (socket) => {
         const shooter = room.players[socket.id];
         if (!shooter || shooter.hp <= 0) return;
 
-        // Refresh bullets based on time before using one
+        // Sync ammo before using
         reloadBullets(shooter);
 
         if (!shooter.bulletsLoaded || shooter.bulletsLoaded <= 0) {
-            // No ammo; just push state so client stays in sync
             socket.emit("ammoUpdate", {
                 id: socket.id,
-                bullets: shooter.bulletsLoaded || 0
+                bullets: shooter.bulletsLoaded || 0,
+                lastReloadTime: shooter.lastReloadTime || Date.now()
             });
             return;
         }
 
         shooter.bulletsLoaded = Math.max(0, shooter.bulletsLoaded - 1);
+
+        io.to(roomId).emit("ammoUpdate", {
+            id: socket.id,
+            bullets: shooter.bulletsLoaded,
+            lastReloadTime: shooter.lastReloadTime
+        });
 
         const { dx, dy } = facingToDelta(shooter.facing || "down");
         if (dx === 0 && dy === 0) return;
@@ -507,20 +509,13 @@ io.on("connection", (socket) => {
         const startX = shooter.x + dx;
         const startY = shooter.y + dy;
 
-        // Share updated ammo
-        io.to(roomId).emit("ammoUpdate", {
-            id: socket.id,
-            bullets: shooter.bulletsLoaded
-        });
-
-        // Out or wall directly in front => visual-only or nothing
         if (startX < 0 || startX >= GRID_SIZE || startY < 0 || startY >= GRID_SIZE || isWall(startX, startY)) {
             return;
         }
 
         const id = nextProjectileId++;
 
-        // Point-blank hit check in the first square
+        // Point-blank: hit first tile if occupied
         let hitId = null;
         for (const [pid, p] of Object.entries(room.players)) {
             if (p.hp > 0 && p.x === startX && p.y === startY) {
@@ -533,7 +528,6 @@ io.on("connection", (socket) => {
             const target = room.players[hitId];
             target.hp = Math.max(0, target.hp - 1);
 
-            // Tiny spawn+destroy so clients see impact
             io.to(roomId).emit("projectileSpawn", {
                 id,
                 x: startX,
@@ -555,7 +549,7 @@ io.on("connection", (socket) => {
             return;
         }
 
-        // Otherwise spawn moving projectile
+        // Normal flying projectile
         const proj = {
             id,
             x: startX,

@@ -106,7 +106,7 @@
 
         #cooldownWrapper {
             width: 480px;
-            height: 10px;
+            height: 12px;
             font-size: 9px;
             color: #555;
             display: none;
@@ -115,19 +115,40 @@
         }
 
         #cooldownBarBg {
+            position: relative;
             flex: 1;
-            height: 4px;
+            height: 6px;
             background: #ddd;
-            border-radius: 2px;
+            border-radius: 3px;
             overflow: hidden;
+        }
+
+        /* Bullet segment dividers (3 segments) */
+        #cooldownBarBg::before,
+        #cooldownBarBg::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: rgba(0, 0, 0, 0.18);
+            pointer-events: none;
+        }
+
+        #cooldownBarBg::before {
+            left: calc(100% / 3);
+        }
+
+        #cooldownBarBg::after {
+            left: calc(200% / 3);
         }
 
         #cooldownBarFill {
             height: 100%;
             width: 0;
             background: #1e90ff;
-            border-radius: 2px;
-            transition: width 0.1s linear;
+            border-radius: 3px;
+            transition: width 0.06s linear;
         }
 
         #scoreboard {
@@ -149,7 +170,6 @@
             text-align: center;
         }
 
-        /* Centered announcement overlay */
         #announcement {
             position: fixed;
             top: 50%;
@@ -217,8 +237,8 @@
             Space: shoot in facing direction. Each bullet takes 1s to load, up to 3 stored.
             You can fire whenever you have bullets (no extra cooldown).<br />
             Bullets are skinny rectangles, move slowly, stop on first hit (wall or player),
-            and deal 1 damage (including to the shooter if hit).
-            If multiple bullets overlap, they’re drawn side by side/stacked so you can count them.
+            and deal 1 damage (including to the shooter if hit). Overlapping bullets are drawn as multiple shapes so you
+            can count the stack.
         </div>
 
         <div id="announcement"></div>
@@ -232,15 +252,16 @@
         let GRID_SIZE = 16;
         let TILE_SIZE = canvas.width / GRID_SIZE;
         const MOVE_DURATION = 80;
-        let JUMP_HEIGHT = TILE_SIZE * 0.35;
         const MAX_BULLETS = 3;
+        const BULLET_RELOAD_MS = 1000;
+        let JUMP_HEIGHT = TILE_SIZE * 0.35;
 
         const players = {};
         const anims = {};
         let walls = [];
 
-        const projectiles = {}; // id -> { x,y,dx,dy }
-        const impactEffects = []; // { x,y,startTime,duration }
+        const projectiles = {};
+        const impactEffects = [];
 
         let socket = null;
         let joined = false;
@@ -263,11 +284,11 @@
         let countdownStartTime = null;
         let countdownDuration = 0;
 
-        // --- SOCKET SETUP ---
+        // --- SOCKET ---
 
         socket = io();
 
-        socket.on("roomsUpdate", (rooms) => {
+        socket.on("roomsUpdate", rooms => {
             if (!joined) renderRoomsList(rooms);
         });
 
@@ -277,7 +298,7 @@
             alert(`Room "${roomId}" is full (2 players max).`);
         });
 
-        joinForm.addEventListener("submit", (e) => {
+        joinForm.addEventListener("submit", e => {
             e.preventDefault();
             if (joined) return;
             const roomId = roomInput.value.trim() || "lobby";
@@ -311,7 +332,7 @@
                 });
         }
 
-        socket.on("currentState", (data) => {
+        socket.on("currentState", data => {
             joined = true;
             yourId = data.yourId;
 
@@ -334,7 +355,6 @@
             joinForm.style.display = "none";
             cooldownWrapper.style.display = "flex";
 
-            updateBulletUI();
             renderScoreboard();
             renderStatus();
             updateAnnouncementInstant();
@@ -387,7 +407,6 @@
             }
 
             if (fromX === toX && fromY === toY) {
-                // Only facing changed
                 anims[id] = {
                     fromX,
                     fromY,
@@ -423,11 +442,14 @@
         // Ammo updates
         socket.on("ammoUpdate", ({
             id,
-            bullets
+            bullets,
+            lastReloadTime
         }) => {
             if (!players[id]) return;
             players[id].bulletsLoaded = bullets;
-            if (id === yourId) updateBulletUI();
+            if (typeof lastReloadTime === "number") {
+                players[id].lastReloadTime = lastReloadTime;
+            }
         });
 
         socket.on("ammoBulkUpdate", ({
@@ -436,12 +458,15 @@
             if (!updates) return;
             updates.forEach(({
                 id,
-                bullets
+                bullets,
+                lastReloadTime
             }) => {
                 if (!players[id]) return;
                 players[id].bulletsLoaded = bullets;
+                if (typeof lastReloadTime === "number") {
+                    players[id].lastReloadTime = lastReloadTime;
+                }
             });
-            updateBulletUI();
         });
 
         // Projectiles
@@ -518,7 +543,6 @@
                 countdownDuration = 0;
             }
 
-            updateBulletUI();
             renderScoreboard();
             renderStatus();
             updateAnnouncementInstant();
@@ -554,7 +578,7 @@
 
         // --- INPUT ---
 
-        window.addEventListener("keydown", (e) => {
+        window.addEventListener("keydown", e => {
             if (!joined || !socket) return;
             if (gameState !== "playing") return;
 
@@ -581,23 +605,11 @@
             }
         });
 
-        // --- UI HELPERS ---
+        // --- HELPERS ---
 
         function clearProjectilesLocal() {
             for (const id in projectiles) delete projectiles[id];
             impactEffects.length = 0;
-        }
-
-        function updateBulletUI() {
-            if (!joined) return;
-            const me = players[yourId];
-            const bullets = me && typeof me.bulletsLoaded === "number" ?
-                me.bulletsLoaded :
-                0;
-
-            const ratio = Math.max(0, Math.min(1, bullets / MAX_BULLETS));
-            cooldownBarFill.style.width = `${ratio * 100}%`;
-            cooldownText.textContent = `${bullets}/${MAX_BULLETS}`;
         }
 
         function renderScoreboard() {
@@ -626,7 +638,7 @@
             } else if (gameState === "playing") {
                 statusMessageDiv.textContent = "Fight!";
             } else if (gameState === "round_over") {
-                // set in roundOver
+                // handled in roundOver
             }
         }
 
@@ -650,7 +662,39 @@
             announcementDiv.classList.add("visible");
         }
 
-        // --- DRAW HELPERS ---
+        // Compute smooth bullet fill (0-1)
+        function getBulletFillRatio(now) {
+            const me = players[yourId];
+            if (!me) return 0;
+            const bullets = Math.max(0, Math.min(MAX_BULLETS, me.bulletsLoaded || 0));
+            let ratio = bullets / MAX_BULLETS;
+
+            if (
+                bullets < MAX_BULLETS &&
+                typeof me.lastReloadTime === "number" &&
+                (gameState === "playing" || gameState === "countdown")
+            ) {
+                const elapsed = now - me.lastReloadTime;
+                const extra = Math.max(0, Math.min(1, elapsed / BULLET_RELOAD_MS));
+                ratio += extra / MAX_BULLETS; // smooth across next segment
+            }
+
+            return Math.max(0, Math.min(1, ratio));
+        }
+
+        function updateBulletUI(now = performance.now()) {
+            if (!joined) return;
+            const me = players[yourId];
+            const bullets = me && typeof me.bulletsLoaded === "number" ?
+                Math.max(0, Math.min(MAX_BULLETS, me.bulletsLoaded)) :
+                0;
+
+            const ratio = getBulletFillRatio(now);
+            cooldownBarFill.style.width = `${ratio * 100}%`;
+            cooldownText.textContent = `${bullets}/${MAX_BULLETS}`;
+        }
+
+        // --- DRAW ---
 
         function drawGrid() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -780,7 +824,7 @@
             ctx.closePath();
             ctx.fill();
 
-            // Outline for your player
+            // Outline (you)
             if (id === yourId) {
                 ctx.lineWidth = 2;
                 ctx.strokeStyle = "#000";
@@ -792,19 +836,25 @@
                 ctx.stroke();
             }
 
-            // HP bar
+            // Segmented HP bar (5 segments)
             const maxHp = 5;
-            const hpRatio = Math.max(0, (p.hp || 0)) / maxHp;
+            const hp = Math.max(0, Math.min(maxHp, p.hp || 0));
+            const segments = 5;
+            const gap = 1;
             const barWidth = size;
             const barHeight = 3;
             const barX = px;
             const barY = py + size + 2;
+            const segWidth = (barWidth - gap * (segments - 1)) / segments;
 
-            ctx.fillStyle = "#ccc";
-            ctx.fillRect(barX, barY, barWidth, barHeight);
-            if (hpRatio > 0) {
-                ctx.fillStyle = "#27ae60";
-                ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+            for (let i = 0; i < segments; i++) {
+                const sx = barX + i * (segWidth + gap);
+                ctx.fillStyle = "#ccc";
+                ctx.fillRect(sx, barY, segWidth, barHeight);
+                if (i < hp) {
+                    ctx.fillStyle = "#27ae60";
+                    ctx.fillRect(sx, barY, segWidth, barHeight);
+                }
             }
 
             // Name
@@ -817,7 +867,7 @@
         }
 
         function drawProjectiles(now) {
-            // Group bullets by tile & direction so we can show multiple side by side / stacked
+            // Group bullets by tile+direction
             const groups = {};
             for (const id in projectiles) {
                 const p = projectiles[id];
@@ -834,7 +884,6 @@
                 groups[key].count++;
             }
 
-            // Draw grouped bullets
             ctx.save();
             ctx.fillStyle = "#000";
 
@@ -848,42 +897,29 @@
                 } = g;
                 const centerX = x * TILE_SIZE + TILE_SIZE / 2;
                 const centerY = y * TILE_SIZE + TILE_SIZE / 2;
-
-                const maxCount = Math.max(1, count);
+                const n = Math.max(1, count);
 
                 if (dx !== 0) {
-                    // Horizontal bullets: arranged vertically stacked
-                    const bulletWidth = TILE_SIZE * 0.6;
-                    const bulletHeight = TILE_SIZE * 0.14;
+                    // Horizontal -> stack vertically
+                    const w = TILE_SIZE * 0.6;
+                    const h = TILE_SIZE * 0.14;
                     const gap = TILE_SIZE * 0.05;
-                    const totalHeight = maxCount * bulletHeight + (maxCount - 1) * gap;
-                    let startY = centerY - totalHeight / 2;
-
-                    for (let i = 0; i < maxCount; i++) {
-                        ctx.fillRect(
-                            centerX - bulletWidth / 2,
-                            startY,
-                            bulletWidth,
-                            bulletHeight
-                        );
-                        startY += bulletHeight + gap;
+                    const totalH = n * h + (n - 1) * gap;
+                    let sy = centerY - totalH / 2;
+                    for (let i = 0; i < n; i++) {
+                        ctx.fillRect(centerX - w / 2, sy, w, h);
+                        sy += h + gap;
                     }
                 } else if (dy !== 0) {
-                    // Vertical bullets: arranged horizontally side by side
-                    const bulletWidth = TILE_SIZE * 0.14;
-                    const bulletHeight = TILE_SIZE * 0.6;
+                    // Vertical -> side by side
+                    const w = TILE_SIZE * 0.14;
+                    const h = TILE_SIZE * 0.6;
                     const gap = TILE_SIZE * 0.05;
-                    const totalWidth = maxCount * bulletWidth + (maxCount - 1) * gap;
-                    let startX = centerX - totalWidth / 2;
-
-                    for (let i = 0; i < maxCount; i++) {
-                        ctx.fillRect(
-                            startX,
-                            centerY - bulletHeight / 2,
-                            bulletWidth,
-                            bulletHeight
-                        );
-                        startX += bulletWidth + gap;
+                    const totalW = n * w + (n - 1) * gap;
+                    let sx = centerX - totalW / 2;
+                    for (let i = 0; i < n; i++) {
+                        ctx.fillRect(sx, centerY - h / 2, w, h);
+                        sx += w + gap;
                     }
                 }
             });
@@ -895,16 +931,15 @@
             impactEffects.forEach(effect => {
                 const t = now - effect.startTime;
                 if (t < 0 || t > effect.duration) return;
-
                 const alpha = 1 - t / effect.duration;
-                const centerX = effect.x * TILE_SIZE + TILE_SIZE / 2;
-                const centerY = effect.y * TILE_SIZE + TILE_SIZE / 2;
+                const cx = effect.x * TILE_SIZE + TILE_SIZE / 2;
+                const cy = effect.y * TILE_SIZE + TILE_SIZE / 2;
                 const size = TILE_SIZE * 0.4;
 
                 ctx.save();
                 ctx.globalAlpha = alpha;
                 ctx.fillStyle = "#e74c3c";
-                ctx.fillRect(centerX - size / 2, centerY - size / 2, size, size);
+                ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
                 ctx.restore();
 
                 keep.push(effect);
@@ -926,6 +961,7 @@
             drawGrid();
             drawWalls();
 
+            // Players
             for (const id in players) {
                 const p = players[id];
                 const anim = anims[id];
@@ -933,7 +969,6 @@
                 if (anim && anim.active) {
                     const elapsed = now - anim.startTime;
                     let t = elapsed / MOVE_DURATION;
-
                     if (t >= 1) {
                         t = 1;
                         anim.active = false;
@@ -945,12 +980,10 @@
                         const gy = anim.fromY + (anim.toY - anim.fromY) * t;
                         const dx = anim.toX - anim.fromX;
                         const dy = anim.toY - anim.fromY;
-
                         let jumpOffset = 0;
                         if (dy !== 0 && dx === 0) {
                             jumpOffset = -4 * JUMP_HEIGHT * t * (1 - t);
                         }
-
                         drawTrianglePlayer(id, gx, gy, jumpOffset);
                     }
                 } else {
@@ -959,13 +992,12 @@
             }
 
             drawProjectiles(now);
-            updateBulletUI();
+            updateBulletUI(now);
 
             if (gameState === "countdown") {
                 updateAnnouncementDuringCountdown(now);
             } else if (gameState === "playing") {
-                if (announcementDiv.textContent &&
-                    announcementDiv.textContent.startsWith("Round starts in")) {
+                if (announcementDiv.textContent.startsWith("Round starts in")) {
                     announcementDiv.textContent = "";
                     announcementDiv.classList.remove("visible");
                 }
