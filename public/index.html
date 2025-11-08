@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <title>Multiplayer Grid Shooter</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <style>
         :root {
             --accent: #1e90ff;
@@ -567,6 +568,7 @@
         let countdownStartTime = null;
         let countdownDuration = 0;
         let touchFeedbackTimeout = null;
+        let hasRequestedFullscreen = false;
 
         const isTouchDevice =
             "ontouchstart" in window ||
@@ -576,6 +578,25 @@
         if (isTouchDevice) {
             touchHint.style.display = "block";
         }
+
+        // --- Fullscreen helper (best-effort, only on user gesture) ---
+
+        function tryEnterFullscreen() {
+            if (hasRequestedFullscreen) return;
+            if (!isTouchDevice) return; // mostly helps mobile
+
+            const el = document.documentElement; // or wrapper
+            if (el.requestFullscreen) {
+                el.requestFullscreen().catch(() => {});
+                hasRequestedFullscreen = true;
+            } else if (el.webkitRequestFullscreen) {
+                el.webkitRequestFullscreen();
+                hasRequestedFullscreen = true;
+            }
+            // Note: Some mobile browsers may ignore this; that's fine.
+        }
+
+        // --- Touch feedback zones ---
 
         function showTouchFeedback(kind, dir, marginX, marginY) {
             if (!touchFeedbackEl) return;
@@ -635,6 +656,8 @@
             }, 120);
         }
 
+        // --- Responsive canvas: clamp to viewport when in room ---
+
         function adjustCanvasSize() {
             if (!joined || canvas.style.display === "none") return;
 
@@ -686,6 +709,8 @@
             setTimeout(adjustCanvasSize, 300);
         });
 
+        // --- Socket setup ---
+
         socket = io();
 
         socket.on("roomsUpdate", rooms => {
@@ -701,6 +726,9 @@
                 roomId,
                 name
             });
+
+            // Try fullscreen as part of this explicit gesture (mobile)
+            tryEnterFullscreen();
         });
 
         function renderRoomsList(rooms) {
@@ -728,6 +756,9 @@
                             roomId: r.roomId,
                             name
                         });
+
+                        // Also attempt fullscreen on quick-join
+                        tryEnterFullscreen();
                     };
                     roomsListDiv.appendChild(btn);
                 });
@@ -760,7 +791,7 @@
 
             roomLabel.textContent = `Room: ${data.roomId}`;
 
-            // Hide lobby-only UI once in a room
+            // Hide lobby UI in room
             if (joinCard) joinCard.style.display = "none";
             joinForm.style.display = "none";
             roomsContainer.style.display = "none";
@@ -1038,6 +1069,8 @@
             adjustCanvasSize();
         });
 
+        // --- Keyboard input ---
+
         window.addEventListener("keydown", e => {
             if (!joined || !socket) return;
             if (gameState !== "playing") return;
@@ -1064,6 +1097,8 @@
             }
         });
 
+        // --- Touch input (also used to trigger fullscreen once in room) ---
+
         if (isTouchDevice) {
             document.addEventListener("touchstart", handleTouchStart, {
                 passive: false
@@ -1071,6 +1106,12 @@
         }
 
         function handleTouchStart(e) {
+            if (joined && !hasRequestedFullscreen) {
+                // First in-room touch: try to go fullscreen
+                tryEnterFullscreen();
+                adjustCanvasSize();
+            }
+
             if (!joined || !socket) return;
             if (gameState !== "playing") return;
 
@@ -1126,10 +1167,16 @@
             }
         }
 
+        // --- Host button (also a nice place to poke fullscreen) ---
+
         startButton.addEventListener("click", () => {
             if (!socket) return;
             socket.emit("startRound");
+            tryEnterFullscreen();
+            adjustCanvasSize();
         });
+
+        // --- Helpers ---
 
         function clearProjectilesLocal() {
             for (const id in projectiles) delete projectiles[id];
@@ -1384,6 +1431,7 @@
                     break;
             }
 
+            // Shadow
             ctx.save();
             ctx.fillStyle = "rgba(0,0,0,0.18)";
             ctx.beginPath();
@@ -1413,6 +1461,7 @@
                 ctx.stroke();
             }
 
+            // HP bar segments
             const maxHp = 5;
             const hp = Math.max(0, Math.min(maxHp, p.hp || 0));
             const segments = 5;
