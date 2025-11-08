@@ -5,16 +5,27 @@
     <meta charset="UTF-8" />
     <title>Multiplayer Grid Shooter</title>
     <style>
+        :root {
+            --accent: #1e90ff;
+            --accent-soft: rgba(30, 144, 255, 0.15);
+            --bg-gradient: linear-gradient(135deg, #f5f7fb, #e6f0ff);
+            --card-bg: rgba(255, 255, 255, 0.98);
+            --border-soft: rgba(0, 0, 0, 0.08);
+            --radius-lg: 14px;
+        }
+
         body {
             margin: 0;
-            height: 100vh;
+            padding: 0;
             display: flex;
             justify-content: center;
-            align-items: center;
-            background: #f5f5f5;
-            font-family: sans-serif;
+            align-items: flex-start;
+            min-height: 100vh;
+            background: var(--bg-gradient);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
             touch-action: none;
-            /* prevent scroll on touch controls */
+            overflow-y: auto;
+            color: #222;
         }
 
         #wrapper {
@@ -23,129 +34,267 @@
             gap: 8px;
             align-items: center;
             position: relative;
+            width: 100%;
+            max-width: 1200px;
+            padding: 8px 10px 8px;
+            box-sizing: border-box;
+        }
+
+        #appTitle {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #222;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #appTitle span.logo-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--accent);
+            display: inline-block;
+        }
+
+        #appSubtitle {
+            font-size: 11px;
+            color: #666;
+            text-align: center;
+            margin-bottom: 6px;
         }
 
         #topRow {
             display: flex;
-            gap: 20px;
-            align-items: flex-start;
+            gap: 14px;
+            align-items: stretch;
+            width: 100%;
+            flex-wrap: wrap;
+        }
+
+        #joinCard {
+            flex: 1.4;
+            min-width: 260px;
+            padding: 10px 12px;
+            border-radius: var(--radius-lg);
+            background: var(--card-bg);
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.09);
+            border: 1px solid var(--border-soft);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        #joinTitle {
+            font-size: 13px;
+            font-weight: 600;
+            color: #222;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        #joinTitle span.pill {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
         }
 
         #joinForm {
             display: flex;
-            gap: 6px;
-            align-items: center;
-            font-size: 14px;
             flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 2px;
+            align-items: center;
+        }
+
+        #joinForm label {
+            font-size: 10px;
+            color: #555;
         }
 
         #joinForm input {
-            padding: 4px 6px;
-            font-size: 13px;
+            padding: 5px 7px;
+            font-size: 11px;
+            border-radius: 6px;
+            border: 1px solid #d0d7e2;
+            outline: none;
+            flex: 1;
+            min-width: 90px;
+            background: #fafbff;
+        }
+
+        #joinForm input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px var(--accent-soft);
         }
 
         #joinForm button {
-            padding: 4px 10px;
-            font-size: 13px;
+            padding: 6px 14px;
+            font-size: 11px;
             border: none;
-            border-radius: 4px;
-            background: #1e90ff;
+            border-radius: 999px;
+            background: var(--accent);
             color: #fff;
             cursor: pointer;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            box-shadow: 0 3px 8px rgba(30, 144, 255, 0.35);
         }
 
         #joinForm button:hover {
-            opacity: 0.9;
+            opacity: 0.96;
+            transform: translateY(-0.5px);
+        }
+
+        #joinHint {
+            font-size: 9px;
+            color: #888;
         }
 
         #roomsContainer {
-            font-size: 12px;
-            color: #333;
-            min-width: 160px;
-        }
-
-        #roomsTitle {
-            font-weight: bold;
-            margin-bottom: 4px;
-        }
-
-        #roomsList {
-            border: 1px solid #ccc;
-            background: #fff;
-            padding: 4px;
-            max-height: 140px;
-            overflow-y: auto;
+            flex: 1;
+            min-width: 200px;
+            padding: 10px 10px 8px;
+            border-radius: var(--radius-lg);
+            background: var(--card-bg);
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.05);
+            border: 1px solid var(--border-soft);
             display: flex;
             flex-direction: column;
             gap: 4px;
         }
 
+        #roomsHeaderRow {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 6px;
+        }
+
+        #roomsTitle {
+            font-weight: 600;
+            font-size: 12px;
+            color: #222;
+        }
+
+        #roomsHint {
+            font-size: 9px;
+            color: #777;
+        }
+
+        #roomsList {
+            margin-top: 2px;
+            border-radius: 8px;
+            border: 1px solid #e0e4f0;
+            background: #fafbff;
+            padding: 4px;
+            max-height: 120px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 10px;
+        }
+
         #roomsList button {
             width: 100%;
-            padding: 2px 4px;
-            font-size: 11px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-            background: #f7f7f7;
+            padding: 5px 7px;
+            font-size: 10px;
+            border: none;
+            border-radius: 6px;
+            background: #ffffff;
             text-align: left;
             cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+            border: 1px solid rgba(148, 163, 253, 0.25);
+        }
+
+        #roomsList button span.name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        #roomsList button span.count {
+            font-size: 9px;
+            color: #6b7280;
         }
 
         #roomsList button:hover {
-            background: #e8f2ff;
+            background: #eff6ff;
         }
 
         #roomLabel {
-            font-size: 13px;
-            color: #555;
+            font-size: 12px;
+            color: #444;
             min-height: 16px;
+            width: 100%;
+            margin-top: 2px;
         }
 
         #controlsRow {
             display: flex;
             gap: 8px;
             align-items: center;
-            width: 1200px;
-            max-width: 100vw;
+            width: 100%;
             justify-content: space-between;
-            padding: 0 4px;
             box-sizing: border-box;
         }
 
         #startButton {
-            padding: 3px 10px;
-            font-size: 11px;
+            padding: 4px 12px;
+            font-size: 10px;
             border: none;
-            border-radius: 4px;
+            border-radius: 999px;
             background: #27ae60;
             color: #fff;
             cursor: pointer;
             display: none;
+            white-space: nowrap;
+            box-shadow: 0 3px 8px rgba(39, 174, 96, 0.3);
         }
 
         #startButton:hover {
-            opacity: 0.9;
+            opacity: 0.97;
+            transform: translateY(-0.5px);
+        }
+
+        #statusMessage {
+            font-size: 10px;
+            color: #666;
+            min-height: 14px;
+            flex: 1;
         }
 
         canvas {
-            border: 1px solid #999;
+            border: 1px solid #cbd5e1;
             background: #ffffff;
             display: none;
-            max-width: 100vw;
+            width: 100%;
             height: auto;
             touch-action: none;
+            border-radius: 10px;
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
         }
 
         #cooldownWrapper {
-            width: 1200px;
-            max-width: 100vw;
+            width: 100%;
             height: 12px;
             font-size: 9px;
-            color: #555;
+            color: #556;
             display: none;
             align-items: center;
             gap: 4px;
-            padding: 0 4px;
             box-sizing: border-box;
         }
 
@@ -153,8 +302,8 @@
             position: relative;
             flex: 1;
             height: 6px;
-            background: #ddd;
-            border-radius: 3px;
+            background: #e5e7eb;
+            border-radius: 999px;
             overflow: hidden;
         }
 
@@ -180,36 +329,36 @@
         #cooldownBarFill {
             height: 100%;
             width: 0;
-            background: #1e90ff;
-            border-radius: 3px;
+            background: var(--accent);
+            border-radius: 999px;
             transition: width 0.06s linear;
+        }
+
+        #cooldownText {
+            min-width: 40px;
+            text-align: right;
         }
 
         #scoreboard {
             font-size: 11px;
             color: #333;
             min-height: 14px;
-        }
-
-        #statusMessage {
-            font-size: 11px;
-            color: #666;
-            min-height: 14px;
+            width: 100%;
         }
 
         #info {
-            font-size: 11px;
-            color: #333;
-            max-width: 1200px;
+            font-size: 10px;
+            color: #555;
+            max-width: 100%;
             text-align: center;
         }
 
         #touchHint {
             display: none;
-            font-size: 10px;
+            font-size: 9px;
             color: #555;
             text-align: center;
-            max-width: 1200px;
+            max-width: 100%;
         }
 
         #announcement {
@@ -218,13 +367,13 @@
             left: 50%;
             transform: translate(-50%, -50%);
             padding: 8px 16px;
-            border-radius: 6px;
-            background: rgba(255, 255, 255, 0.9);
-            font-size: 22px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.96);
+            font-size: 20px;
             font-weight: 700;
-            color: #222;
+            color: #111827;
             text-align: center;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+            box-shadow: 0 8px 26px rgba(15, 23, 42, 0.28);
             pointer-events: none;
             opacity: 0;
             transition: opacity 0.2s;
@@ -247,18 +396,46 @@
             z-index: 900;
         }
 
+        @media (max-height: 600px) {
+            #wrapper {
+                gap: 4px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+            }
+
+            #appTitle {
+                font-size: 18px;
+            }
+
+            #appSubtitle {
+                font-size: 9px;
+            }
+
+            #joinForm input,
+            #joinForm button {
+                font-size: 10px;
+            }
+
+            #roomsList {
+                max-height: 90px;
+            }
+
+            #statusMessage,
+            #scoreboard,
+            #info,
+            #touchHint {
+                font-size: 8.5px;
+            }
+
+            #announcement {
+                font-size: 17px;
+                padding: 6px 10px;
+            }
+        }
+
         @media (max-width: 768px) {
             #topRow {
                 flex-direction: column;
-                align-items: flex-start;
-            }
-
-            #controlsRow {
-                width: 100vw;
-            }
-
-            #cooldownWrapper {
-                width: 100vw;
             }
         }
     </style>
@@ -266,19 +443,41 @@
 
 <body>
     <div id="wrapper">
+        <div id="appTitle">
+            <span class="logo-dot"></span>
+            Online Grid Arena
+        </div>
+        <div id="appSubtitle">Join a room, outplay the others with clever movement and shots. Last triangle standing
+            scores.</div>
+
         <div id="topRow">
-            <form id="joinForm">
-                <span>Room:</span>
-                <input id="roomInput" placeholder="e.g. arena-1" />
-                <span>Name:</span>
-                <input id="nameInput" placeholder="Your name" />
-                <button type="submit">Join</button>
-            </form>
+            <div id="joinCard">
+                <div id="joinTitle">
+                    Join or create a room
+                    <span class="pill">1. Choose room &amp; name</span>
+                </div>
+                <form id="joinForm">
+                    <label for="roomInput">Room</label>
+                    <input id="roomInput" placeholder="e.g. arena-1 (new or existing)" />
+                    <label for="nameInput">Name</label>
+                    <input id="nameInput" placeholder="Your name" />
+                    <button type="submit">
+                        <span>Enter Arena</span>
+                        <span>↗</span>
+                    </button>
+                </form>
+                <div id="joinHint">Rooms are created automatically if they don't exist yet.</div>
+            </div>
 
             <div id="roomsContainer">
-                <div id="roomsTitle">Active Rooms</div>
+                <div id="roomsHeaderRow">
+                    <div>
+                        <div id="roomsTitle">Active Rooms</div>
+                        <div id="roomsHint">Tap to quick-join someone already playing.</div>
+                    </div>
+                </div>
                 <div id="roomsList">
-                    <div>Loading...</div>
+                    <div>No active rooms yet. Create one on the left.</div>
                 </div>
             </div>
         </div>
@@ -290,7 +489,6 @@
             <button id="startButton">Start Round</button>
         </div>
 
-        <!-- 40 x 18 tiles, designed for 1200x540 -->
         <canvas id="game" width="1200" height="540"></canvas>
 
         <div id="cooldownWrapper">
@@ -304,14 +502,14 @@
         <div id="scoreboard"></div>
 
         <div id="info">
-            Desktop: Arrows to move, Space to shoot. Host starts rounds (≥2 players). Last player standing gets 1
+            Desktop: arrows to move, Space to shoot. Host starts rounds (≥2 players). Last player standing gets 1
             point.<br />
             Terrain: black walls (solid), black+gold walls (reflect bullets), X spikes (-1 HP), green cactus that splits
-            a bullet once and then becomes solid.
+            a bullet once, then becomes solid.
         </div>
 
         <div id="touchHint">
-            Touch: tap top/bottom bands to move up/down, side bands (middle area) to move left/right, center to shoot.
+            Touch: top/bottom bands = up/down, side middle bands = left/right, center = shoot.
         </div>
 
         <div id="announcement"></div>
@@ -322,10 +520,11 @@
     <script>
         const canvas = document.getElementById("game");
         const ctx = canvas.getContext("2d");
+        const wrapper = document.getElementById("wrapper");
 
         let GRID_W = 40;
         let GRID_H = 18;
-        let TILE_SIZE = canvas.width / GRID_W; // 30px
+        let TILE_SIZE = canvas.width / GRID_W;
         const MOVE_DURATION = 80;
         const MAX_BULLETS = 3;
         const BULLET_RELOAD_MS = 1000;
@@ -347,6 +546,7 @@
         let hostId = null;
         let gameState = "waiting";
 
+        const joinCard = document.getElementById("joinCard");
         const joinForm = document.getElementById("joinForm");
         const roomInput = document.getElementById("roomInput");
         const nameInput = document.getElementById("nameInput");
@@ -377,14 +577,11 @@
             touchHint.style.display = "block";
         }
 
-        // --- TOUCH FEEDBACK ---
-
         function showTouchFeedback(kind, dir, marginX, marginY) {
             if (!touchFeedbackEl) return;
 
             const vw = window.innerWidth;
             const vh = window.innerHeight;
-
             let left = 0,
                 top = 0,
                 width = 0,
@@ -393,28 +590,24 @@
 
             if (kind === "move") {
                 if (dir === "up") {
-                    // Full-width top band
                     left = 0;
                     top = 0;
                     width = vw;
                     height = marginY;
                     radius = 0;
                 } else if (dir === "down") {
-                    // Full-width bottom band
                     left = 0;
                     top = vh - marginY;
                     width = vw;
                     height = marginY;
                     radius = 0;
                 } else if (dir === "left") {
-                    // Left band only in middle vertical region
                     left = 0;
                     top = marginY;
                     width = marginX;
                     height = vh - 2 * marginY;
                     radius = 0;
                 } else if (dir === "right") {
-                    // Right band only in middle vertical region
                     left = vw - marginX;
                     top = marginY;
                     width = marginX;
@@ -422,7 +615,6 @@
                     radius = 0;
                 }
             } else if (kind === "shoot") {
-                // Center = between all bands
                 left = marginX;
                 top = marginY;
                 width = vw - 2 * marginX;
@@ -437,15 +629,62 @@
             touchFeedbackEl.style.borderRadius = radius + "px";
             touchFeedbackEl.style.opacity = "1";
 
-            if (touchFeedbackTimeout) {
-                clearTimeout(touchFeedbackTimeout);
-            }
+            if (touchFeedbackTimeout) clearTimeout(touchFeedbackTimeout);
             touchFeedbackTimeout = setTimeout(() => {
                 touchFeedbackEl.style.opacity = "0";
             }, 120);
         }
 
-        // --- SOCKET INIT ---
+        function adjustCanvasSize() {
+            if (!joined || canvas.style.display === "none") return;
+
+            canvas.style.width = "100%";
+            canvas.style.height = "auto";
+
+            const viewportH = window.innerHeight;
+            const wrapperRect = wrapper.getBoundingClientRect();
+            const canvasRect = canvas.getBoundingClientRect();
+            const otherHeight = wrapperRect.height - canvasRect.height;
+
+            const aspect = canvas.width / canvas.height;
+            const wrapperWidth = wrapper.clientWidth;
+            const maxTotal = viewportH - 2;
+            let maxCanvasHeight = maxTotal - otherHeight;
+
+            if (maxCanvasHeight <= 0) maxCanvasHeight = 60;
+
+            if (canvasRect.height > maxCanvasHeight) {
+                let newH = Math.max(60, maxCanvasHeight);
+                let newW = newH * aspect;
+                if (newW > wrapperWidth) {
+                    newW = wrapperWidth;
+                    newH = newW / aspect;
+                }
+                canvas.style.height = newH + "px";
+                canvas.style.width = newW + "px";
+            } else {
+                const fullW = wrapperWidth;
+                const fullH = fullW / aspect;
+                if (otherHeight + fullH > maxTotal) {
+                    let newH = Math.max(60, maxTotal - otherHeight);
+                    let newW = newH * aspect;
+                    if (newW > wrapperWidth) {
+                        newW = wrapperWidth;
+                        newH = newW / aspect;
+                    }
+                    canvas.style.height = newH + "px";
+                    canvas.style.width = newW + "px";
+                } else {
+                    canvas.style.width = "100%";
+                    canvas.style.height = "auto";
+                }
+            }
+        }
+
+        window.addEventListener("resize", adjustCanvasSize);
+        window.addEventListener("orientationchange", () => {
+            setTimeout(adjustCanvasSize, 300);
+        });
 
         socket = io();
 
@@ -467,14 +706,21 @@
         function renderRoomsList(rooms) {
             roomsListDiv.innerHTML = "";
             if (!rooms || rooms.length === 0) {
-                roomsListDiv.innerHTML = "<div>No active rooms yet</div>";
+                roomsListDiv.innerHTML = "<div>No active rooms yet. Create one using the form.</div>";
                 return;
             }
             rooms
                 .sort((a, b) => a.roomId.localeCompare(b.roomId))
                 .forEach(r => {
                     const btn = document.createElement("button");
-                    btn.textContent = `${r.roomId} (${r.count})`;
+                    const nameSpan = document.createElement("span");
+                    nameSpan.className = "name";
+                    nameSpan.textContent = r.roomId;
+                    const countSpan = document.createElement("span");
+                    countSpan.className = "count";
+                    countSpan.textContent = `${r.count} in room`;
+                    btn.appendChild(nameSpan);
+                    btn.appendChild(countSpan);
                     btn.onclick = () => {
                         if (joined) return;
                         const name = nameInput.value.trim() || "";
@@ -514,11 +760,14 @@
 
             roomLabel.textContent = `Room: ${data.roomId}`;
 
+            // Hide lobby-only UI once in a room
+            if (joinCard) joinCard.style.display = "none";
+            joinForm.style.display = "none";
+            roomsContainer.style.display = "none";
+
             canvas.style.display = "block";
             cooldownWrapper.style.display = "flex";
 
-            joinForm.style.display = "none";
-            roomsContainer.style.display = "none";
             if (isTouchDevice) {
                 infoDiv.style.display = "none";
                 touchHint.style.display = "block";
@@ -528,6 +777,7 @@
             renderStatus();
             updateAnnouncementInstant();
             renderHostControls();
+            adjustCanvasSize();
         });
 
         socket.on("playerJoined", ({
@@ -537,6 +787,7 @@
             players[id] = player;
             renderScoreboard();
             renderHostControls();
+            adjustCanvasSize();
         });
 
         socket.on("playerLeft", ({
@@ -546,6 +797,7 @@
             delete anims[id];
             renderScoreboard();
             renderHostControls();
+            adjustCanvasSize();
         });
 
         socket.on("hostUpdate", ({
@@ -743,6 +995,7 @@
             renderStatus();
             updateAnnouncementInstant();
             renderHostControls();
+            adjustCanvasSize();
         });
 
         socket.on("roundOver", ({
@@ -782,9 +1035,8 @@
             statusMessageDiv.textContent = `${msg} Host can start the next round.`;
 
             renderHostControls();
+            adjustCanvasSize();
         });
-
-        // --- INPUT: KEYBOARD ---
 
         window.addEventListener("keydown", e => {
             if (!joined || !socket) return;
@@ -811,8 +1063,6 @@
                 if (bullets > 0) socket.emit("shoot");
             }
         });
-
-        // --- INPUT: TOUCH ---
 
         if (isTouchDevice) {
             document.addEventListener("touchstart", handleTouchStart, {
@@ -844,8 +1094,7 @@
             const inLeftBand = x < marginX;
             const inRightBand = x > vw - marginX;
 
-            let action = null;
-            let dir = null;
+            let action, dir;
 
             if (inTopBand) {
                 action = "move";
@@ -872,21 +1121,15 @@
             } else if (action === "shoot") {
                 e.preventDefault();
                 const bullets = me.bulletsLoaded ?? 0;
-                if (bullets > 0) {
-                    socket.emit("shoot");
-                }
+                if (bullets > 0) socket.emit("shoot");
                 showTouchFeedback("shoot", null, marginX, marginY);
             }
         }
-
-        // --- HOST BUTTON ---
 
         startButton.addEventListener("click", () => {
             if (!socket) return;
             socket.emit("startRound");
         });
-
-        // --- HELPERS ---
 
         function clearProjectilesLocal() {
             for (const id in projectiles) delete projectiles[id];
@@ -933,7 +1176,7 @@
             }
             const playersCount = Object.keys(players).length;
             if ((gameState === "waiting" || gameState === "round_over") && playersCount >= 2) {
-                startButton.style.display = "inline-block";
+                startButton.style.display = "inline-flex";
             } else {
                 startButton.style.display = "none";
             }
@@ -974,7 +1217,6 @@
                 const extra = Math.max(0, Math.min(1, elapsed / BULLET_RELOAD_MS));
                 ratio += extra / MAX_BULLETS;
             }
-
             return Math.max(0, Math.min(1, ratio));
         }
 
@@ -984,19 +1226,15 @@
             const bullets = me && typeof me.bulletsLoaded === "number" ?
                 Math.max(0, Math.min(MAX_BULLETS, me.bulletsLoaded)) :
                 0;
-
             const ratio = getBulletFillRatio(now);
             cooldownBarFill.style.width = `${ratio * 100}%`;
             cooldownText.textContent = `${bullets}/${MAX_BULLETS}`;
         }
 
-        // --- TERRAIN RENDERING ---
-
         function drawGrid() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.lineWidth = 1;
-            ctx.strokeStyle = "#e0e0e0";
-
+            ctx.strokeStyle = "#e5e7eb";
             for (let x = 0; x <= GRID_W; x++) {
                 const px = x * TILE_SIZE;
                 ctx.beginPath();
@@ -1004,7 +1242,6 @@
                 ctx.lineTo(px, canvas.height);
                 ctx.stroke();
             }
-
             for (let y = 0; y <= GRID_H; y++) {
                 const py = y * TILE_SIZE;
                 ctx.beginPath();
@@ -1015,13 +1252,11 @@
         }
 
         function drawTerrain() {
-            // Walls: solid black
             ctx.fillStyle = "#000";
             walls.forEach(w => {
                 ctx.fillRect(w.x * TILE_SIZE, w.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
             });
 
-            // Reflecting walls: black with thick bright gold border
             reflectWalls.forEach(w => {
                 const x = w.x * TILE_SIZE;
                 const y = w.y * TILE_SIZE;
@@ -1032,7 +1267,6 @@
                 ctx.strokeRect(x + 1.5, y + 1.5, TILE_SIZE - 3, TILE_SIZE - 3);
             });
 
-            // Spikes: black X
             ctx.strokeStyle = "#000";
             ctx.lineWidth = 3;
             spikes.forEach(s => {
@@ -1046,7 +1280,6 @@
                 ctx.stroke();
             });
 
-            // Cacti: inset body, bullet pods sticking out if unused
             cacti.forEach(c => {
                 const x = c.x * TILE_SIZE;
                 const y = c.y * TILE_SIZE;
@@ -1063,40 +1296,13 @@
                     ctx.fillStyle = "#000";
                     const bLen = TILE_SIZE * 0.46;
                     const bThick = TILE_SIZE * 0.12;
-
-                    // Up
-                    ctx.fillRect(
-                        x + TILE_SIZE / 2 - bThick / 2,
-                        bodyY - bLen * 0.35,
-                        bThick,
-                        bLen
-                    );
-                    // Down
-                    ctx.fillRect(
-                        x + TILE_SIZE / 2 - bThick / 2,
-                        bodyY + bodyH - bLen * 0.65,
-                        bThick,
-                        bLen
-                    );
-                    // Left
-                    ctx.fillRect(
-                        bodyX - bLen * 0.35,
-                        y + TILE_SIZE / 2 - bThick / 2,
-                        bLen,
-                        bThick
-                    );
-                    // Right
-                    ctx.fillRect(
-                        bodyX + bodyW - bLen * 0.65,
-                        y + TILE_SIZE / 2 - bThick / 2,
-                        bLen,
-                        bThick
-                    );
+                    ctx.fillRect(x + TILE_SIZE / 2 - bThick / 2, bodyY - bLen * 0.35, bThick, bLen);
+                    ctx.fillRect(x + TILE_SIZE / 2 - bThick / 2, bodyY + bodyH - bLen * 0.65, bThick, bLen);
+                    ctx.fillRect(bodyX - bLen * 0.35, y + TILE_SIZE / 2 - bThick / 2, bLen, bThick);
+                    ctx.fillRect(bodyX + bodyW - bLen * 0.65, y + TILE_SIZE / 2 - bThick / 2, bLen, bThick);
                 }
             });
         }
-
-        // --- PLAYER RENDER (rounded back corners) ---
 
         function drawTrianglePlayer(id, gridX, gridY, jumpOffset = 0) {
             const p = players[id];
@@ -1178,7 +1384,6 @@
                     break;
             }
 
-            // Shadow
             ctx.save();
             ctx.fillStyle = "rgba(0,0,0,0.18)";
             ctx.beginPath();
@@ -1190,8 +1395,6 @@
             ctx.restore();
 
             const radius = TILE_SIZE * 0.18;
-
-            // Rounded triangle
             ctx.beginPath();
             ctx.moveTo(tip.x, tip.y);
             ctx.lineTo(back1.x, back1.y);
@@ -1201,8 +1404,7 @@
             ctx.lineTo(tip.x, tip.y);
             ctx.closePath();
 
-            const baseColor = p.color || "#1e90ff";
-            ctx.fillStyle = p.hp > 0 ? baseColor : "#7f8c8d";
+            ctx.fillStyle = p.hp > 0 ? (p.color || "#1e90ff") : "#7f8c8d";
             ctx.fill();
 
             if (id === yourId) {
@@ -1211,7 +1413,6 @@
                 ctx.stroke();
             }
 
-            // HP segments
             const maxHp = 5;
             const hp = Math.max(0, Math.min(maxHp, p.hp || 0));
             const segments = 5;
@@ -1224,38 +1425,34 @@
 
             for (let i = 0; i < segments; i++) {
                 const sx = barX + i * (segWidth + gap);
-                ctx.fillStyle = "#ccc";
+                ctx.fillStyle = "#e5e7eb";
                 ctx.fillRect(sx, barY, segWidth, barHeight);
                 if (i < hp) {
-                    ctx.fillStyle = "#27ae60";
+                    ctx.fillStyle = "#22c55e";
                     ctx.fillRect(sx, barY, segWidth, barHeight);
                 }
             }
 
             if (p.name) {
                 ctx.font = "10px sans-serif";
-                ctx.fillStyle = "#333";
+                ctx.fillStyle = "#111827";
                 ctx.textAlign = "center";
-                ctx.fillText(p.name, cx, py - 4);
+                ctx.fillText(p.name, cx, py - 3);
             }
         }
-
-        // --- PROJECTILES RENDER ---
 
         function drawProjectiles(now) {
             const groups = {};
             for (const id in projectiles) {
                 const p = projectiles[id];
                 const key = `${p.x},${p.y},${p.dx},${p.dy}`;
-                if (!groups[key]) {
-                    groups[key] = {
-                        x: p.x,
-                        y: p.y,
-                        dx: p.dx,
-                        dy: p.dy,
-                        count: 0
-                    };
-                }
+                if (!groups[key]) groups[key] = {
+                    x: p.x,
+                    y: p.y,
+                    dx: p.dx,
+                    dy: p.dy,
+                    count: 0
+                };
                 groups[key].count++;
             }
 
@@ -1269,8 +1466,8 @@
                     dy,
                     count
                 } = g;
-                const centerX = x * TILE_SIZE + TILE_SIZE / 2;
-                const centerY = y * TILE_SIZE + TILE_SIZE / 2;
+                const cx = x * TILE_SIZE + TILE_SIZE / 2;
+                const cy = y * TILE_SIZE + TILE_SIZE / 2;
                 const n = Math.max(1, count);
 
                 if (dx !== 0) {
@@ -1278,9 +1475,9 @@
                     const h = TILE_SIZE * 0.14;
                     const gap = TILE_SIZE * 0.05;
                     const totalH = n * h + (n - 1) * gap;
-                    let sy = centerY - totalH / 2;
+                    let sy = cy - totalH / 2;
                     for (let i = 0; i < n; i++) {
-                        ctx.fillRect(centerX - w / 2, sy, w, h);
+                        ctx.fillRect(cx - w / 2, sy, w, h);
                         sy += h + gap;
                     }
                 } else if (dy !== 0) {
@@ -1288,9 +1485,9 @@
                     const h = TILE_SIZE * 0.6;
                     const gap = TILE_SIZE * 0.05;
                     const totalW = n * w + (n - 1) * gap;
-                    let sx = centerX - totalW / 2;
+                    let sx = cx - totalW / 2;
                     for (let i = 0; i < n; i++) {
-                        ctx.fillRect(sx, centerY - h / 2, w, h);
+                        ctx.fillRect(sx, cy - h / 2, w, h);
                         sx += w + gap;
                     }
                 }
@@ -1305,28 +1502,23 @@
                 const cx = effect.x * TILE_SIZE + TILE_SIZE / 2;
                 const cy = effect.y * TILE_SIZE + TILE_SIZE / 2;
                 const size = TILE_SIZE * 0.4;
-
                 ctx.save();
                 ctx.globalAlpha = alpha;
-                ctx.fillStyle = "#e74c3c";
+                ctx.fillStyle = "#ef4444";
                 ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
                 ctx.restore();
-
                 keep.push(effect);
             });
             impactEffects.length = 0;
             impactEffects.push(...keep);
         }
 
-        // --- MAIN LOOP ---
-
-        function gameLoop(timestamp) {
+        function gameLoop(ts) {
             if (!joined) {
                 requestAnimationFrame(gameLoop);
                 return;
             }
-
-            const now = timestamp || performance.now();
+            const now = ts || performance.now();
 
             drawGrid();
             drawTerrain();
@@ -1334,7 +1526,6 @@
             for (const id in players) {
                 const p = players[id];
                 const anim = anims[id];
-
                 if (anim && anim.active) {
                     const elapsed = now - anim.startTime;
                     let t = elapsed / MOVE_DURATION;
