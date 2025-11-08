@@ -18,7 +18,7 @@
         #wrapper {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
             align-items: center;
             position: relative;
         }
@@ -98,6 +98,29 @@
             min-height: 16px;
         }
 
+        #controlsRow {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            width: 1200px;
+            justify-content: space-between;
+        }
+
+        #startButton {
+            padding: 3px 10px;
+            font-size: 11px;
+            border: none;
+            border-radius: 4px;
+            background: #27ae60;
+            color: #fff;
+            cursor: pointer;
+            display: none;
+        }
+
+        #startButton:hover {
+            opacity: 0.9;
+        }
+
         canvas {
             border: 1px solid #999;
             background: #ffffff;
@@ -105,7 +128,7 @@
         }
 
         #cooldownWrapper {
-            width: 480px;
+            width: 1200px;
             height: 12px;
             font-size: 9px;
             color: #555;
@@ -123,7 +146,6 @@
             overflow: hidden;
         }
 
-        /* Bullet segment dividers (3 segments) */
         #cooldownBarBg::before,
         #cooldownBarBg::after {
             content: "";
@@ -166,7 +188,7 @@
         #info {
             font-size: 11px;
             color: #333;
-            max-width: 480px;
+            max-width: 1200px;
             text-align: center;
         }
 
@@ -217,7 +239,13 @@
 
         <div id="roomLabel"></div>
 
-        <canvas id="game" width="480" height="480"></canvas>
+        <div id="controlsRow">
+            <div id="statusMessage"></div>
+            <button id="startButton">Start Round</button>
+        </div>
+
+        <!-- 40 x 18 tiles, 30px each -->
+        <canvas id="game" width="1200" height="540"></canvas>
 
         <div id="cooldownWrapper">
             <span>Bullets:</span>
@@ -228,17 +256,12 @@
         </div>
 
         <div id="scoreboard"></div>
-        <div id="statusMessage"></div>
 
         <div id="info">
-            Click a room button or enter a room &amp; name, then join.<br />
-            Max 2 players per room. When 2 join: 3s countdown, then fight.<br />
-            Arrows: move (horizontal = slide, vertical = hop). Turning works even if blocked.<br />
-            Space: shoot in facing direction. Each bullet takes 1s to load, up to 3 stored.
-            You can fire whenever you have bullets (no extra cooldown).<br />
-            Bullets are skinny rectangles, move slowly, stop on first hit (wall or player),
-            and deal 1 damage (including to the shooter if hit). Overlapping bullets are drawn as multiple shapes so you
-            can count the stack.
+            Create or join a room. First player becomes host. Host starts rounds (≥2 players).<br />
+            Last player standing gets +1 point. Arrows: move. Space: shoot.<br />
+            Terrain: black walls (solid), black+gold walls (reflect bullets), pixel-hole pits (instant death), black
+            star spikes (-1 HP), green cacti that split a bullet once.
         </div>
 
         <div id="announcement"></div>
@@ -249,8 +272,9 @@
         const canvas = document.getElementById("game");
         const ctx = canvas.getContext("2d");
 
-        let GRID_SIZE = 16;
-        let TILE_SIZE = canvas.width / GRID_SIZE;
+        let GRID_W = 40;
+        let GRID_H = 18;
+        let TILE_SIZE = canvas.width / GRID_W; // 30px
         const MOVE_DURATION = 80;
         const MAX_BULLETS = 3;
         const BULLET_RELOAD_MS = 1000;
@@ -258,25 +282,32 @@
 
         const players = {};
         const anims = {};
-        let walls = [];
-
         const projectiles = {};
         const impactEffects = [];
+
+        let walls = [];
+        let reflectWalls = [];
+        let holes = [];
+        let spikes = [];
+        let cacti = [];
 
         let socket = null;
         let joined = false;
         let yourId = null;
+        let hostId = null;
         let gameState = "waiting";
 
         const joinForm = document.getElementById("joinForm");
         const roomInput = document.getElementById("roomInput");
         const nameInput = document.getElementById("nameInput");
-        const roomLabel = document.getElementById("roomLabel");
+        const roomsContainer = document.getElementById("roomsContainer");
         const roomsListDiv = document.getElementById("roomsList");
+        const roomLabel = document.getElementById("roomLabel");
         const scoreboardDiv = document.getElementById("scoreboard");
         const statusMessageDiv = document.getElementById("statusMessage");
         const announcementDiv = document.getElementById("announcement");
-
+        const infoDiv = document.getElementById("info");
+        const startButton = document.getElementById("startButton");
         const cooldownWrapper = document.getElementById("cooldownWrapper");
         const cooldownBarFill = document.getElementById("cooldownBarFill");
         const cooldownText = document.getElementById("cooldownText");
@@ -284,18 +315,12 @@
         let countdownStartTime = null;
         let countdownDuration = 0;
 
-        // --- SOCKET ---
+        // --- SOCKET INIT ---
 
         socket = io();
 
         socket.on("roomsUpdate", rooms => {
             if (!joined) renderRoomsList(rooms);
-        });
-
-        socket.on("roomFull", ({
-            roomId
-        }) => {
-            alert(`Room "${roomId}" is full (2 players max).`);
         });
 
         joinForm.addEventListener("submit", e => {
@@ -319,7 +344,7 @@
                 .sort((a, b) => a.roomId.localeCompare(b.roomId))
                 .forEach(r => {
                     const btn = document.createElement("button");
-                    btn.textContent = `${r.roomId} (${r.count}/2)`;
+                    btn.textContent = `${r.roomId} (${r.count})`;
                     btn.onclick = () => {
                         if (joined) return;
                         const name = nameInput.value.trim() || "";
@@ -335,15 +360,23 @@
         socket.on("currentState", data => {
             joined = true;
             yourId = data.yourId;
+            hostId = data.hostId || null;
 
-            GRID_SIZE = data.gridSize || GRID_SIZE;
-            TILE_SIZE = canvas.width / GRID_SIZE;
+            GRID_W = data.gridWidth || GRID_W;
+            GRID_H = data.gridHeight || GRID_H;
+            TILE_SIZE = canvas.width / GRID_W;
             JUMP_HEIGHT = TILE_SIZE * 0.35;
+
             walls = data.walls || [];
+            reflectWalls = data.reflectWalls || [];
+            holes = data.holes || [];
+            spikes = data.spikes || [];
+            cacti = (data.cacti || []).map(c => ({
+                ...c
+            }));
 
             for (const id in players) delete players[id];
             Object.assign(players, data.players || {});
-
             clearProjectilesLocal();
 
             gameState = data.state || "waiting";
@@ -351,13 +384,19 @@
             countdownDuration = 0;
 
             roomLabel.textContent = `Room: ${data.roomId}`;
+
             canvas.style.display = "block";
-            joinForm.style.display = "none";
             cooldownWrapper.style.display = "flex";
+
+            // Hide lobby UI inside room
+            joinForm.style.display = "none";
+            roomsContainer.style.display = "none";
+            infoDiv.style.display = "none";
 
             renderScoreboard();
             renderStatus();
             updateAnnouncementInstant();
+            renderHostControls();
         });
 
         socket.on("playerJoined", ({
@@ -366,6 +405,7 @@
         }) => {
             players[id] = player;
             renderScoreboard();
+            renderHostControls();
         });
 
         socket.on("playerLeft", ({
@@ -374,6 +414,14 @@
             delete players[id];
             delete anims[id];
             renderScoreboard();
+            renderHostControls();
+        });
+
+        socket.on("hostUpdate", ({
+            hostId: newHost
+        }) => {
+            hostId = newHost || null;
+            renderHostControls();
         });
 
         socket.on("playerMove", ({
@@ -396,7 +444,6 @@
                     bulletsLoaded: 0
                 };
             }
-
             if (facing) players[id].facing = facing;
 
             const existing = anims[id];
@@ -439,7 +486,6 @@
             });
         });
 
-        // Ammo updates
         socket.on("ammoUpdate", ({
             id,
             bullets,
@@ -469,7 +515,6 @@
             });
         });
 
-        // Projectiles
         socket.on("projectileSpawn", ({
             id,
             x,
@@ -488,12 +533,15 @@
         socket.on("projectileUpdate", ({
             id,
             x,
-            y
+            y,
+            dx,
+            dy
         }) => {
-            if (projectiles[id]) {
-                projectiles[id].x = x;
-                projectiles[id].y = y;
-            }
+            if (!projectiles[id]) return;
+            if (typeof x === "number") projectiles[id].x = x;
+            if (typeof y === "number") projectiles[id].y = y;
+            if (typeof dx === "number") projectiles[id].dx = dx;
+            if (typeof dy === "number") projectiles[id].dy = dy;
         });
 
         socket.on("projectileDestroy", ({
@@ -501,9 +549,10 @@
             x,
             y
         }) => {
-            if (projectiles[id]) {
-                const px = typeof x === "number" ? x : projectiles[id].x;
-                const py = typeof y === "number" ? y : projectiles[id].y;
+            const p = projectiles[id];
+            if (p) {
+                const px = typeof x === "number" ? x : p.x;
+                const py = typeof y === "number" ? y : p.y;
                 impactEffects.push({
                     x: px,
                     y: py,
@@ -518,16 +567,31 @@
             clearProjectilesLocal();
         });
 
+        socket.on("cactusUsed", ({
+            x,
+            y
+        }) => {
+            const c = cacti.find(c => c.x === x && c.y === y);
+            if (c) c.used = true;
+        });
+
         socket.on("roundState", ({
             state,
             countdown,
-            players: serverPlayers
+            players: serverPlayers,
+            hostId: newHost,
+            cacti: serverCacti
         }) => {
             gameState = state;
-
+            if (typeof newHost !== "undefined") hostId = newHost;
             if (serverPlayers) {
                 for (const id in players) delete players[id];
                 Object.assign(players, serverPlayers);
+            }
+            if (serverCacti) {
+                cacti = serverCacti.map(c => ({
+                    ...c
+                }));
             }
 
             clearProjectilesLocal();
@@ -546,13 +610,23 @@
             renderScoreboard();
             renderStatus();
             updateAnnouncementInstant();
+            renderHostControls();
         });
 
         socket.on("roundOver", ({
             winnerId,
-            scores
+            scores,
+            hostId: newHost,
+            cacti: serverCacti
         }) => {
             gameState = "round_over";
+            if (typeof newHost !== "undefined") hostId = newHost;
+            if (serverCacti) {
+                cacti = serverCacti.map(c => ({
+                    ...c
+                }));
+            }
+
             clearProjectilesLocal();
 
             if (scores) {
@@ -573,7 +647,9 @@
 
             announcementDiv.textContent = msg;
             announcementDiv.classList.add("visible");
-            statusMessageDiv.textContent = `${msg} Next round in 2s...`;
+            statusMessageDiv.textContent = `${msg} Host can start the next round.`;
+
+            renderHostControls();
         });
 
         // --- INPUT ---
@@ -605,6 +681,11 @@
             }
         });
 
+        startButton.addEventListener("click", () => {
+            if (!socket) return;
+            socket.emit("startRound");
+        });
+
         // --- HELPERS ---
 
         function clearProjectilesLocal() {
@@ -632,19 +713,35 @@
 
         function renderStatus() {
             if (gameState === "waiting") {
-                statusMessageDiv.textContent = "Waiting for 2 players...";
+                statusMessageDiv.textContent = "Waiting. Host can start when ready (≥2 players).";
             } else if (gameState === "countdown") {
                 statusMessageDiv.textContent = "Round starting...";
             } else if (gameState === "playing") {
                 statusMessageDiv.textContent = "Fight!";
-            } else if (gameState === "round_over") {
-                // handled in roundOver
+            }
+        }
+
+        function renderHostControls() {
+            if (!joined) {
+                startButton.style.display = "none";
+                return;
+            }
+            const isHost = yourId && hostId && yourId === hostId;
+            if (!isHost) {
+                startButton.style.display = "none";
+                return;
+            }
+            const playersCount = Object.keys(players).length;
+            if ((gameState === "waiting" || gameState === "round_over") && playersCount >= 2) {
+                startButton.style.display = "inline-block";
+            } else {
+                startButton.style.display = "none";
             }
         }
 
         function updateAnnouncementInstant() {
             if (gameState === "waiting") {
-                announcementDiv.textContent = "Waiting for 2 players...";
+                announcementDiv.textContent = "Waiting for host to start (≥2 players)...";
                 announcementDiv.classList.add("visible");
             } else if (gameState === "playing") {
                 announcementDiv.textContent = "";
@@ -662,21 +759,20 @@
             announcementDiv.classList.add("visible");
         }
 
-        // Compute smooth bullet fill (0-1)
         function getBulletFillRatio(now) {
             const me = players[yourId];
             if (!me) return 0;
-            const bullets = Math.max(0, Math.min(MAX_BULLETS, me.bulletsLoaded || 0));
-            let ratio = bullets / MAX_BULLETS;
+            const base = Math.max(0, Math.min(MAX_BULLETS, me.bulletsLoaded || 0));
+            let ratio = base / MAX_BULLETS;
 
             if (
-                bullets < MAX_BULLETS &&
+                base < MAX_BULLETS &&
                 typeof me.lastReloadTime === "number" &&
                 (gameState === "playing" || gameState === "countdown")
             ) {
                 const elapsed = now - me.lastReloadTime;
                 const extra = Math.max(0, Math.min(1, elapsed / BULLET_RELOAD_MS));
-                ratio += extra / MAX_BULLETS; // smooth across next segment
+                ratio += extra / MAX_BULLETS;
             }
 
             return Math.max(0, Math.min(1, ratio));
@@ -694,149 +790,235 @@
             cooldownText.textContent = `${bullets}/${MAX_BULLETS}`;
         }
 
-        // --- DRAW ---
+        // --- TERRAIN RENDERING ---
 
         function drawGrid() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.lineWidth = 1;
             ctx.strokeStyle = "#e0e0e0";
 
-            for (let i = 0; i <= GRID_SIZE; i++) {
-                const x = i * TILE_SIZE;
+            for (let x = 0; x <= GRID_W; x++) {
+                const px = x * TILE_SIZE;
                 ctx.beginPath();
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, canvas.height);
+                ctx.moveTo(px, 0);
+                ctx.lineTo(px, canvas.height);
                 ctx.stroke();
             }
 
-            for (let i = 0; i <= GRID_SIZE; i++) {
-                const y = i * TILE_SIZE;
+            for (let y = 0; y <= GRID_H; y++) {
+                const py = y * TILE_SIZE;
                 ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(canvas.width, y);
+                ctx.moveTo(0, py);
+                ctx.lineTo(canvas.width, py);
                 ctx.stroke();
             }
         }
 
-        function drawWalls() {
-            if (!walls) return;
-            ctx.fillStyle = "#d0d0d0";
+        function drawTerrain() {
+            // Walls: solid black
+            ctx.fillStyle = "#000";
             walls.forEach(w => {
-                ctx.fillRect(
-                    w.x * TILE_SIZE,
-                    w.y * TILE_SIZE,
-                    TILE_SIZE,
-                    TILE_SIZE
-                );
+                ctx.fillRect(w.x * TILE_SIZE, w.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+            });
+
+            // Reflecting walls: black with thick bright gold border
+            reflectWalls.forEach(w => {
+                const x = w.x * TILE_SIZE;
+                const y = w.y * TILE_SIZE;
+                ctx.fillStyle = "#000";
+                ctx.fillRect(x, y, TILE_SIZE, TILE_SIZE);
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = "#ffd700";
+                ctx.strokeRect(x + 1.5, y + 1.5, TILE_SIZE - 3, TILE_SIZE - 3);
+            });
+
+            // Spikes: black X
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 3;
+            spikes.forEach(s => {
+                const x = s.x * TILE_SIZE;
+                const y = s.y * TILE_SIZE;
+                ctx.beginPath();
+                ctx.moveTo(x + TILE_SIZE * 0.2, y + TILE_SIZE * 0.2);
+                ctx.lineTo(x + TILE_SIZE * 0.8, y + TILE_SIZE * 0.8);
+                ctx.moveTo(x + TILE_SIZE * 0.8, y + TILE_SIZE * 0.2);
+                ctx.lineTo(x + TILE_SIZE * 0.2, y + TILE_SIZE * 0.8);
+                ctx.stroke();
+            });
+
+            // Cacti: almost full tile, with bullet pods sticking out a bit
+            cacti.forEach(c => {
+                const x = c.x * TILE_SIZE;
+                const y = c.y * TILE_SIZE;
+
+                // slightly inset body so pods can pop out
+                const pad = TILE_SIZE * 0.14;
+                const bodyX = x + pad;
+                const bodyY = y + pad;
+                const bodyW = TILE_SIZE - pad * 2;
+                const bodyH = TILE_SIZE - pad * 2;
+
+                ctx.fillStyle = "#27ae60";
+                ctx.fillRect(bodyX, bodyY, bodyW, bodyH);
+
+                if (!c.used) {
+                    ctx.fillStyle = "#000";
+                    const bLen = TILE_SIZE * 0.46;
+                    const bThick = TILE_SIZE * 0.12;
+
+                    // Up (extends slightly above body)
+                    ctx.fillRect(
+                        x + TILE_SIZE / 2 - bThick / 2,
+                        bodyY - bLen * 0.35,
+                        bThick,
+                        bLen
+                    );
+
+                    // Down
+                    ctx.fillRect(
+                        x + TILE_SIZE / 2 - bThick / 2,
+                        bodyY + bodyH - bLen * 0.65,
+                        bThick,
+                        bLen
+                    );
+
+                    // Left
+                    ctx.fillRect(
+                        bodyX - bLen * 0.35,
+                        y + TILE_SIZE / 2 - bThick / 2,
+                        bLen,
+                        bThick
+                    );
+
+                    // Right
+                    ctx.fillRect(
+                        bodyX + bodyW - bLen * 0.65,
+                        y + TILE_SIZE / 2 - bThick / 2,
+                        bLen,
+                        bThick
+                    );
+                }
             });
         }
+
+        // --- PLAYER DRAW ---
 
         function drawTrianglePlayer(id, gridX, gridY, jumpOffset = 0) {
             const p = players[id];
             if (!p) return;
 
-            const padding = TILE_SIZE * 0.18;
-            const px = gridX * TILE_SIZE + padding;
-            const py = gridY * TILE_SIZE + padding + jumpOffset;
+            const padding = TILE_SIZE * 0.12;
+            const baseX = gridX * TILE_SIZE;
+            const baseY = gridY * TILE_SIZE + jumpOffset;
+
+            // Highlight your tile
+            if (id === yourId) {
+                ctx.fillStyle = "rgba(255, 255, 0, 0.16)";
+                ctx.fillRect(baseX, gridY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+            }
+
+            const px = baseX + padding;
+            const py = baseY + padding;
             const size = TILE_SIZE - padding * 2;
             const cx = px + size / 2;
             const cy = py + size / 2;
 
-            let a, b, c;
+            let tip, back1, back2;
             switch (p.facing || "down") {
                 case "up":
-                    a = {
+                    tip = {
                         x: cx,
                         y: py
                     };
-                    b = {
+                    back1 = {
                         x: px,
                         y: py + size
                     };
-                    c = {
+                    back2 = {
                         x: px + size,
                         y: py + size
                     };
                     break;
                 case "down":
-                    a = {
+                    tip = {
                         x: cx,
                         y: py + size
                     };
-                    b = {
+                    back1 = {
                         x: px,
                         y: py
                     };
-                    c = {
+                    back2 = {
                         x: px + size,
                         y: py
                     };
                     break;
                 case "left":
-                    a = {
+                    tip = {
                         x: px,
                         y: cy
                     };
-                    b = {
+                    back1 = {
                         x: px + size,
                         y: py
                     };
-                    c = {
+                    back2 = {
                         x: px + size,
                         y: py + size
                     };
                     break;
                 case "right":
                 default:
-                    a = {
+                    tip = {
                         x: px + size,
                         y: cy
                     };
-                    b = {
+                    back1 = {
                         x: px,
                         y: py
                     };
-                    c = {
+                    back2 = {
                         x: px,
                         y: py + size
                     };
                     break;
             }
 
-            // Shadow
+            // Soft drop shadow (simple triangle)
             ctx.save();
             ctx.fillStyle = "rgba(0,0,0,0.18)";
             ctx.beginPath();
-            ctx.moveTo(a.x + 2, a.y + 2);
-            ctx.lineTo(b.x + 2, b.y + 2);
-            ctx.lineTo(c.x + 2, c.y + 2);
+            ctx.moveTo(tip.x + 2, tip.y + 2);
+            ctx.lineTo(back1.x + 2, back1.y + 2);
+            ctx.lineTo(back2.x + 2, back2.y + 2);
             ctx.closePath();
             ctx.fill();
             ctx.restore();
 
-            // Body
+            const radius = TILE_SIZE * 0.18;
+
+            // Rounded triangle body: sharp tip, rounded back corners
+            ctx.beginPath();
+            ctx.moveTo(tip.x, tip.y);
+            ctx.lineTo(back1.x, back1.y);
+            ctx.arcTo(back1.x, back1.y, back2.x, back2.y, radius);
+            ctx.lineTo(back2.x, back2.y);
+            ctx.arcTo(back2.x, back2.y, tip.x, tip.y, radius);
+            ctx.lineTo(tip.x, tip.y);
+            ctx.closePath();
+
             const baseColor = p.color || "#1e90ff";
             ctx.fillStyle = p.hp > 0 ? baseColor : "#7f8c8d";
-            ctx.beginPath();
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
-            ctx.lineTo(c.x, c.y);
-            ctx.closePath();
             ctx.fill();
 
-            // Outline (you)
+            // Extra outline for your player
             if (id === yourId) {
-                ctx.lineWidth = 2;
+                ctx.lineWidth = 3;
                 ctx.strokeStyle = "#000";
-                ctx.beginPath();
-                ctx.moveTo(a.x, a.y);
-                ctx.lineTo(b.x, b.y);
-                ctx.lineTo(c.x, c.y);
-                ctx.closePath();
                 ctx.stroke();
             }
 
-            // Segmented HP bar (5 segments)
+            // Segmented HP bar (5)
             const maxHp = 5;
             const hp = Math.max(0, Math.min(maxHp, p.hp || 0));
             const segments = 5;
@@ -859,15 +1041,17 @@
 
             // Name
             if (p.name) {
-                ctx.font = "9px sans-serif";
+                ctx.font = "10px sans-serif";
                 ctx.fillStyle = "#333";
                 ctx.textAlign = "center";
-                ctx.fillText(p.name, cx, py - 3);
+                ctx.fillText(p.name, cx, py - 4);
             }
         }
 
+        // --- PROJECTILES DRAW ---
+
         function drawProjectiles(now) {
-            // Group bullets by tile+direction
+            // Group by tile+direction for stacks
             const groups = {};
             for (const id in projectiles) {
                 const p = projectiles[id];
@@ -886,7 +1070,6 @@
 
             ctx.save();
             ctx.fillStyle = "#000";
-
             Object.values(groups).forEach(g => {
                 const {
                     x,
@@ -900,7 +1083,6 @@
                 const n = Math.max(1, count);
 
                 if (dx !== 0) {
-                    // Horizontal -> stack vertically
                     const w = TILE_SIZE * 0.6;
                     const h = TILE_SIZE * 0.14;
                     const gap = TILE_SIZE * 0.05;
@@ -911,7 +1093,6 @@
                         sy += h + gap;
                     }
                 } else if (dy !== 0) {
-                    // Vertical -> side by side
                     const w = TILE_SIZE * 0.14;
                     const h = TILE_SIZE * 0.6;
                     const gap = TILE_SIZE * 0.05;
@@ -923,7 +1104,6 @@
                     }
                 }
             });
-
             ctx.restore();
 
             // Impact flashes
@@ -959,9 +1139,8 @@
             const now = timestamp || performance.now();
 
             drawGrid();
-            drawWalls();
+            drawTerrain();
 
-            // Players
             for (const id in players) {
                 const p = players[id];
                 const anim = anims[id];
@@ -1002,10 +1181,11 @@
                     announcementDiv.classList.remove("visible");
                 }
             } else if (gameState === "waiting") {
-                announcementDiv.textContent = "Waiting for 2 players...";
+                announcementDiv.textContent = "Waiting for host to start (≥2 players)...";
                 announcementDiv.classList.add("visible");
             }
 
+            renderHostControls();
             requestAnimationFrame(gameLoop);
         }
 

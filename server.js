@@ -12,31 +12,56 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, "public")));
 
 // --- GAME CONSTANTS ---
-const GRID_SIZE = 16;
-const MAX_PLAYERS_PER_ROOM = 2;
-const PROJECTILE_STEP_MS = 140;   // bullet travel tick
-const BULLET_RELOAD_MS = 1000;    // 1s per bullet
+const GRID_W = 40;
+const GRID_H = 18;
+
+const PROJECTILE_STEP_MS = 140;
+const BULLET_RELOAD_MS = 1000;
 const MAX_BULLETS = 3;
 
-// Static walls
+// --- TERRAIN (no holes) ---
+
 const WALLS = [
-    { x: 7, y: 6 }, { x: 7, y: 7 }, { x: 7, y: 8 },
-    { x: 6, y: 7 }, { x: 8, y: 7 },
+    { x: 19, y: 8 }, { x: 20, y: 8 },
+    { x: 19, y: 9 }, { x: 20, y: 9 },
+    { x: 10, y: 4 }, { x: 11, y: 4 }, { x: 12, y: 4 },
+    { x: 27, y: 13 }, { x: 28, y: 13 }, { x: 29, y: 13 }
+];
 
-    { x: 2, y: 2 }, { x: 3, y: 2 }, { x: 4, y: 2 },
-    { x: 2, y: 3 }, { x: 4, y: 3 },
-    { x: 2, y: 4 }, { x: 3, y: 4 }, { x: 4, y: 4 },
+const REFLECT_WALLS = [
+    { x: 5, y: 5 },
+    { x: 34, y: 5 },
+    { x: 5, y: 12 },
+    { x: 34, y: 12 }
+];
 
-    { x: 12, y: 4 }, { x: 12, y: 5 }, { x: 12, y: 6 }, { x: 12, y: 7 },
+// spikes: damage on step
+const SPIKES = [
+    { x: 8, y: 7 },
+    { x: 31, y: 10 },
+    { x: 16, y: 12 }
+];
 
-    { x: 5, y: 12 }, { x: 6, y: 12 }, { x: 7, y: 12 }
+// cacti: per-room copy with "used"
+const CACTI_LAYOUT = [
+    { x: 14, y: 6 },
+    { x: 25, y: 6 },
+    { x: 20, y: 3 }
 ];
 
 function isWall(x, y) {
     return WALLS.some(w => w.x === x && w.y === y);
 }
 
-// rooms[roomId] = { players, projectiles, state, countdownTimeout, restartTimeout }
+function isReflectWall(x, y) {
+    return REFLECT_WALLS.some(w => w.x === x && w.y === y);
+}
+
+function isSpike(x, y) {
+    return SPIKES.some(s => s.x === x && s.y === y);
+}
+
+// rooms[roomId] = { players, projectiles, cacti, state, hostId, countdownTimeout, restartTimeout }
 const rooms = Object.create(null);
 let nextProjectileId = 1;
 
@@ -69,10 +94,14 @@ function ensureRoom(roomId) {
         rooms[roomId] = {
             players: {},
             projectiles: [],
+            cacti: CACTI_LAYOUT.map(c => ({ ...c, used: false })),
             state: "waiting",
+            hostId: null,
             countdownTimeout: null,
             restartTimeout: null
         };
+    } else if (!rooms[roomId].cacti) {
+        rooms[roomId].cacti = CACTI_LAYOUT.map(c => ({ ...c, used: false }));
     }
     return rooms[roomId];
 }
@@ -94,9 +123,22 @@ function isTileBlockedByPlayer(roomId, x, y, ignoreId = null) {
     );
 }
 
+function isCactusPos(room, x, y) {
+    return room.cacti && room.cacti.some(c => c.x === x && c.y === y);
+}
+
+function getCactusAt(room, x, y) {
+    if (!room.cacti) return null;
+    return room.cacti.find(c => c.x === x && c.y === y) || null;
+}
+
+// 🔒 now cacti are solid for players
 function isBlocked(roomId, x, y, ignoreId = null) {
-    if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return true;
-    if (isWall(x, y)) return true;
+    if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return true;
+    const room = rooms[roomId];
+    if (!room) return true;
+    if (isWall(x, y) || isReflectWall(x, y)) return true;
+    if (isCactusPos(room, x, y)) return true;
     if (isTileBlockedByPlayer(roomId, x, y, ignoreId)) return true;
     return false;
 }
@@ -105,15 +147,31 @@ function getRandomSpawn(roomId) {
     const room = rooms[roomId];
     if (!room) return { x: 0, y: 0 };
 
-    for (let i = 0; i < 200; i++) {
-        const x = Math.floor(Math.random() * GRID_SIZE);
-        const y = Math.floor(Math.random() * GRID_SIZE);
-        if (!isBlocked(roomId, x, y, null)) return { x, y };
+    for (let i = 0; i < 800; i++) {
+        const x = Math.floor(Math.random() * GRID_W);
+        const y = Math.floor(Math.random() * GRID_H);
+        if (
+            !isWall(x, y) &&
+            !isReflectWall(x, y) &&
+            !isSpike(x, y) &&
+            !isCactusPos(room, x, y) &&
+            !isTileBlockedByPlayer(roomId, x, y, null)
+        ) {
+            return { x, y };
+        }
     }
 
-    for (let y = 0; y < GRID_SIZE; y++) {
-        for (let x = 0; x < GRID_SIZE; x++) {
-            if (!isBlocked(roomId, x, y, null)) return { x, y };
+    for (let y = 0; y < GRID_H; y++) {
+        for (let x = 0; x < GRID_W; x++) {
+            if (
+                !isWall(x, y) &&
+                !isReflectWall(x, y) &&
+                !isSpike(x, y) &&
+                !isCactusPos(room, x, y) &&
+                !isTileBlockedByPlayer(roomId, x, y, null)
+            ) {
+                return { x, y };
+            }
         }
     }
     return { x: 0, y: 0 };
@@ -146,12 +204,10 @@ function reloadBullets(player) {
         player.lastReloadTime = now;
         return true;
     }
-
     if (player.bulletsLoaded >= MAX_BULLETS) {
         player.lastReloadTime = now;
         return false;
     }
-
     if (!player.lastReloadTime) player.lastReloadTime = now;
 
     const elapsed = now - player.lastReloadTime;
@@ -168,7 +224,7 @@ function reloadBullets(player) {
     return player.bulletsLoaded !== old;
 }
 
-// --- ROUND / STATE MANAGEMENT ---
+// --- TIMERS / STATE HELPERS ---
 
 function clearRoomTimers(room) {
     if (room.countdownTimeout) {
@@ -188,6 +244,8 @@ function clearProjectiles(roomId) {
     io.to(roomId).emit("clearProjectiles");
 }
 
+// --- ROUND CONTROL ---
+
 function startRound(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -198,13 +256,23 @@ function startRound(roomId) {
     const ids = Object.keys(room.players);
     if (ids.length < 2) {
         room.state = "waiting";
-        io.to(roomId).emit("roundState", { state: "waiting" });
+        io.to(roomId).emit("roundState", {
+            state: "waiting",
+            hostId: room.hostId,
+            cacti: room.cacti
+        });
         broadcastRoomsUpdate();
         return;
     }
 
-    const now = Date.now();
+    // reset cactus usage each round
+    if (!room.cacti) {
+        room.cacti = CACTI_LAYOUT.map(c => ({ ...c, used: false }));
+    } else {
+        room.cacti.forEach(c => { c.used = false; });
+    }
 
+    const now = Date.now();
     ids.forEach(id => {
         const p = room.players[id];
         const spawn = getRandomSpawn(roomId);
@@ -220,7 +288,9 @@ function startRound(roomId) {
     io.to(roomId).emit("roundState", {
         state: "countdown",
         countdown: 3000,
-        players: room.players
+        players: room.players,
+        hostId: room.hostId,
+        cacti: room.cacti
     });
 
     room.countdownTimeout = setTimeout(() => {
@@ -230,15 +300,25 @@ function startRound(roomId) {
 
         if (Object.keys(r.players).length < 2) {
             r.state = "waiting";
-            io.to(roomId).emit("roundState", { state: "waiting" });
+            io.to(roomId).emit("roundState", {
+                state: "waiting",
+                hostId: r.hostId,
+                cacti: r.cacti
+            });
             broadcastRoomsUpdate();
             return;
         }
 
         r.state = "playing";
-        io.to(roomId).emit("roundState", { state: "playing" });
+        io.to(roomId).emit("roundState", {
+            state: "playing",
+            hostId: r.hostId,
+            cacti: r.cacti
+        });
     }, 3000);
 }
+
+// --- ROUND END ---
 
 function handleRoundEndIfNeeded(roomId) {
     const room = rooms[roomId];
@@ -265,24 +345,19 @@ function handleRoundEndIfNeeded(roomId) {
 
     io.to(roomId).emit("roundOver", {
         winnerId,
-        scores
+        scores,
+        hostId: room.hostId,
+        cacti: room.cacti
     });
-
-    room.restartTimeout = setTimeout(() => {
-        const r = rooms[roomId];
-        if (!r) return;
-        r.restartTimeout = null;
-        startRound(roomId);
-    }, 2000);
 }
 
-// --- PROJECTILE + RELOAD TICK (pairwise bullet collisions) ---
+// --- PROJECTILE TICK (includes cactus + reflect + bullet vs bullet) ---
 
 function tickProjectilesAndReload() {
     for (const [roomId, room] of Object.entries(rooms)) {
         if (!room.players) continue;
 
-        // Reload bullets
+        // reload bullets
         const ammoUpdates = [];
         for (const [pid, p] of Object.entries(room.players)) {
             if (room.state === "playing" || room.state === "countdown") {
@@ -295,17 +370,13 @@ function tickProjectilesAndReload() {
                 }
             }
         }
-        if (ammoUpdates.length > 0) {
+        if (ammoUpdates.length) {
             io.to(roomId).emit("ammoBulkUpdate", { updates: ammoUpdates });
         }
 
-        if (room.state !== "playing" || !room.projectiles || room.projectiles.length === 0) {
-            continue;
-        }
+        if (room.state !== "playing" || !room.projectiles.length) continue;
 
         const projs = room.projectiles;
-
-        // Precompute intended next positions
         const extended = projs.map(p => ({
             ...p,
             nx: p.x + p.dx,
@@ -313,33 +384,24 @@ function tickProjectilesAndReload() {
         }));
 
         const toRemove = new Set();
+        const spawned = [];
 
-        // 1) Crossing collisions (swap positions on adjacent tiles)
-        // Use segment keys to pair bullets from opposite directions.
+        // crossing collisions
         const segMap = {};
         for (const p of extended) {
             if (p.dx === 0 && p.dy === 0) continue;
-
             if (p.dx !== 0) {
-                // horizontal move: segment between x and nx at row y
-                const xMin = Math.min(p.x, p.nx);
-                const key = `h:${xMin},${p.y}`;
+                const key = `h:${Math.min(p.x, p.nx)},${p.y}`;
                 (segMap[key] ||= []).push(p);
             } else {
-                // vertical move: segment between y and ny at column x
-                const yMin = Math.min(p.y, p.ny);
-                const key = `v:${p.x},${yMin}`;
+                const key = `v:${p.x},${Math.min(p.y, p.ny)}`;
                 (segMap[key] ||= []).push(p);
             }
         }
-
         for (const key in segMap) {
             const list = segMap[key];
             if (list.length < 2) continue;
-
-            let pos = [];
-            let neg = [];
-
+            let pos = [], neg = [];
             if (key.startsWith("h:")) {
                 pos = list.filter(p => p.dx > 0);
                 neg = list.filter(p => p.dx < 0);
@@ -347,7 +409,6 @@ function tickProjectilesAndReload() {
                 pos = list.filter(p => p.dy > 0);
                 neg = list.filter(p => p.dy < 0);
             }
-
             const pairs = Math.min(pos.length, neg.length);
             for (let i = 0; i < pairs; i++) {
                 toRemove.add(pos[i].id);
@@ -355,15 +416,13 @@ function tickProjectilesAndReload() {
             }
         }
 
-        // 2) Same-tile collisions (multiple bullets land on same nx,ny)
-        // Pair opposite directions; each pair cancels ONE bullet from each side.
+        // same-tile opposite-direction collisions
         const tileMap = {};
         for (const p of extended) {
-            if (toRemove.has(p.id)) continue; // already removed by crossing
+            if (toRemove.has(p.id)) continue;
             const key = `${p.nx},${p.ny}`;
             (tileMap[key] ||= []).push(p);
         }
-
         function pairCancel(aArr, bArr) {
             const pairs = Math.min(aArr.length, bArr.length);
             for (let i = 0; i < pairs; i++) {
@@ -371,51 +430,118 @@ function tickProjectilesAndReload() {
                 toRemove.add(bArr[i].id);
             }
         }
-
         for (const key in tileMap) {
             const g = tileMap[key];
             if (g.length < 2) continue;
-
-            const left = [];
-            const right = [];
-            const up = [];
-            const down = [];
-
+            const left = [], right = [], up = [], down = [];
             for (const p of g) {
                 if (p.dx === -1) left.push(p);
                 else if (p.dx === 1) right.push(p);
                 else if (p.dy === -1) up.push(p);
                 else if (p.dy === 1) down.push(p);
             }
-
-            pairCancel(left, right); // horizontal face-off
-            pairCancel(up, down);    // vertical face-off
+            pairCancel(left, right);
+            pairCancel(up, down);
         }
 
-        // 3) Apply removals + normal movement / hits
         const remaining = [];
 
         for (const p of extended) {
             if (toRemove.has(p.id)) {
-                // Destroy at current position for a quick "pop"
-                io.to(roomId).emit("projectileDestroy", {
-                    id: p.id,
-                    x: p.x,
-                    y: p.y
-                });
+                io.to(roomId).emit("projectileDestroy", { id: p.id, x: p.x, y: p.y });
                 continue;
             }
 
             const nx = p.nx;
             const ny = p.ny;
 
-            // Out-of-bounds or wall
-            if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE || isWall(nx, ny)) {
+            if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H) {
                 io.to(roomId).emit("projectileDestroy", { id: p.id, x: nx, y: ny });
                 continue;
             }
 
-            // Player hit
+            // reflect wall → bounce
+            if (isReflectWall(nx, ny)) {
+                const bounced = { ...p, x: p.x, y: p.y, dx: -p.dx, dy: -p.dy };
+                delete bounced.nx; delete bounced.ny;
+                remaining.push(bounced);
+                io.to(roomId).emit("projectileUpdate", {
+                    id: p.id,
+                    x: bounced.x,
+                    y: bounced.y,
+                    dx: bounced.dx,
+                    dy: bounced.dy
+                });
+                continue;
+            }
+
+            // solid wall → destroy
+            if (isWall(nx, ny)) {
+                io.to(roomId).emit("projectileDestroy", { id: p.id, x: nx, y: ny });
+                continue;
+            }
+
+            // cactus → solid for bullets; if unused, trigger once and spawn 4
+            const cactus = getCactusAt(room, nx, ny);
+            if (cactus) {
+                if (!cactus.used) {
+                    cactus.used = true;
+
+                    io.to(roomId).emit("projectileDestroy", {
+                        id: p.id,
+                        x: nx,
+                        y: ny
+                    });
+                    io.to(roomId).emit("cactusUsed", {
+                        x: cactus.x,
+                        y: cactus.y
+                    });
+
+                    const dirs = [
+                        { dx: 1, dy: 0 },
+                        { dx: -1, dy: 0 },
+                        { dx: 0, dy: 1 },
+                        { dx: 0, dy: -1 }
+                    ];
+
+                    dirs.forEach(d => {
+                        const sx = nx + d.dx;
+                        const sy = ny + d.dy;
+                        if (sx < 0 || sx >= GRID_W || sy < 0 || sy >= GRID_H) return;
+                        if (isWall(sx, sy) || isReflectWall(sx, sy) || getCactusAt(room, sx, sy)) return;
+
+                        const id2 = nextProjectileId++;
+                        const proj2 = {
+                            id: id2,
+                            x: sx,
+                            y: sy,
+                            dx: d.dx,
+                            dy: d.dy,
+                            shooterId: p.shooterId
+                        };
+                        spawned.push(proj2);
+                        io.to(roomId).emit("projectileSpawn", {
+                            id: id2,
+                            x: sx,
+                            y: sy,
+                            dx: d.dx,
+                            dy: d.dy
+                        });
+                    });
+                } else {
+                    // already used: act like a wall for bullets
+                    io.to(roomId).emit("projectileDestroy", {
+                        id: p.id,
+                        x: nx,
+                        y: ny
+                    });
+                }
+                continue; // important: stop processing this projectile
+            }
+
+            // spikes don't affect bullets
+
+            // player hit
             let hitId = null;
             for (const [pid, pl] of Object.entries(room.players)) {
                 if (pl.hp > 0 && pl.x === nx && pl.y === ny) {
@@ -423,31 +549,21 @@ function tickProjectilesAndReload() {
                     break;
                 }
             }
-
             if (hitId) {
                 const target = room.players[hitId];
                 target.hp = Math.max(0, target.hp - 1);
-
                 io.to(roomId).emit("healthUpdate", {
                     hits: [{ id: hitId, hp: target.hp }]
                 });
-
-                io.to(roomId).emit("projectileDestroy", {
-                    id: p.id,
-                    x: nx,
-                    y: ny
-                });
-
+                io.to(roomId).emit("projectileDestroy", { id: p.id, x: nx, y: ny });
                 handleRoundEndIfNeeded(roomId);
                 continue;
             }
 
-            // Move projectile forward
+            // normal move
             const moved = { ...p, x: nx, y: ny };
-            delete moved.nx;
-            delete moved.ny;
+            delete moved.nx; delete moved.ny;
             remaining.push(moved);
-
             io.to(roomId).emit("projectileUpdate", {
                 id: p.id,
                 x: nx,
@@ -455,7 +571,7 @@ function tickProjectilesAndReload() {
             });
         }
 
-        room.projectiles = remaining;
+        room.projectiles = remaining.concat(spawned);
     }
 }
 
@@ -468,15 +584,15 @@ io.on("connection", (socket) => {
 
     socket.on("joinRoom", ({ roomId, name }) => {
         roomId = String(roomId || "").trim() || "lobby";
+        const existed = !!rooms[roomId];
         const room = ensureRoom(roomId);
-
-        if (Object.keys(room.players).length >= MAX_PLAYERS_PER_ROOM) {
-            socket.emit("roomFull", { roomId });
-            return;
-        }
 
         socket.join(roomId);
         socket.data.roomId = roomId;
+
+        if (!existed || !room.hostId) {
+            room.hostId = socket.id;
+        }
 
         const spawn = getRandomSpawn(roomId);
         const color = getColorForPlayer(roomId);
@@ -503,20 +619,28 @@ io.on("connection", (socket) => {
             yourId: socket.id,
             players: room.players,
             walls: WALLS,
-            gridSize: GRID_SIZE,
-            state: room.state
+            reflectWalls: REFLECT_WALLS,
+            spikes: SPIKES,
+            cacti: room.cacti,
+            gridWidth: GRID_W,
+            gridHeight: GRID_H,
+            state: room.state,
+            hostId: room.hostId
         });
 
-        socket.to(roomId).emit("playerJoined", {
-            id: socket.id,
-            player
-        });
-
+        socket.to(roomId).emit("playerJoined", { id: socket.id, player });
+        io.to(roomId).emit("hostUpdate", { hostId: room.hostId });
         broadcastRoomsUpdate();
+    });
 
-        if (Object.keys(room.players).length === 2) {
-            startRound(roomId);
-        }
+    socket.on("startRound", () => {
+        const roomId = socket.data.roomId;
+        const room = rooms[roomId];
+        if (!room) return;
+        if (room.hostId !== socket.id) return;
+        if (Object.keys(room.players).length < 2) return;
+        if (room.state === "countdown" || room.state === "playing") return;
+        startRound(roomId);
     });
 
     socket.on("move", ({ direction }) => {
@@ -540,7 +664,6 @@ io.on("connection", (socket) => {
         const toX = fromX + dx;
         const toY = fromY + dy;
 
-        // Always rotate, even if blocked
         player.facing = newFacing;
 
         if (isBlocked(roomId, toX, toY, socket.id)) {
@@ -566,6 +689,15 @@ io.on("connection", (socket) => {
             toY,
             facing: player.facing
         });
+
+        // spikes damage
+        if (isSpike(toX, toY) && player.hp > 0) {
+            player.hp = Math.max(0, player.hp - 1);
+            io.to(roomId).emit("healthUpdate", {
+                hits: [{ id: socket.id, hp: player.hp }]
+            });
+            handleRoundEndIfNeeded(roomId);
+        }
     });
 
     socket.on("shoot", () => {
@@ -576,9 +708,7 @@ io.on("connection", (socket) => {
         const shooter = room.players[socket.id];
         if (!shooter || shooter.hp <= 0) return;
 
-        // Sync ammo before using
         reloadBullets(shooter);
-
         if (!shooter.bulletsLoaded || shooter.bulletsLoaded <= 0) {
             socket.emit("ammoUpdate", {
                 id: socket.id,
@@ -589,7 +719,6 @@ io.on("connection", (socket) => {
         }
 
         shooter.bulletsLoaded = Math.max(0, shooter.bulletsLoaded - 1);
-
         io.to(roomId).emit("ammoUpdate", {
             id: socket.id,
             bullets: shooter.bulletsLoaded,
@@ -602,13 +731,18 @@ io.on("connection", (socket) => {
         const startX = shooter.x + dx;
         const startY = shooter.y + dy;
 
-        if (startX < 0 || startX >= GRID_SIZE || startY < 0 || startY >= GRID_SIZE || isWall(startX, startY)) {
+        if (
+            startX < 0 || startX >= GRID_W ||
+            startY < 0 || startY >= GRID_H ||
+            isWall(startX, startY) || isReflectWall(startX, startY) ||
+            isCactusPos(room, startX, startY) // can't spawn inside solid
+        ) {
             return;
         }
 
         const id = nextProjectileId++;
 
-        // Point-blank: hit first tile if occupied
+        // immediate hit check
         let hitId = null;
         for (const [pid, p] of Object.entries(room.players)) {
             if (p.hp > 0 && p.x === startX && p.y === startY) {
@@ -616,56 +750,27 @@ io.on("connection", (socket) => {
                 break;
             }
         }
-
         if (hitId) {
             const target = room.players[hitId];
             target.hp = Math.max(0, target.hp - 1);
 
-            io.to(roomId).emit("projectileSpawn", {
-                id,
-                x: startX,
-                y: startY,
-                dx,
-                dy
-            });
-            io.to(roomId).emit("projectileDestroy", {
-                id,
-                x: startX,
-                y: startY
-            });
-
+            io.to(roomId).emit("projectileSpawn", { id, x: startX, y: startY, dx, dy });
+            io.to(roomId).emit("projectileDestroy", { id, x: startX, y: startY });
             io.to(roomId).emit("healthUpdate", {
                 hits: [{ id: hitId, hp: target.hp }]
             });
-
             handleRoundEndIfNeeded(roomId);
             return;
         }
 
-        // Normal projectile
-        const proj = {
-            id,
-            x: startX,
-            y: startY,
-            dx,
-            dy,
-            shooterId: socket.id
-        };
+        const proj = { id, x: startX, y: startY, dx, dy, shooterId: socket.id };
         room.projectiles.push(proj);
-
-        io.to(roomId).emit("projectileSpawn", {
-            id,
-            x: proj.x,
-            y: proj.y,
-            dx: proj.dx,
-            dy: proj.dy
-        });
+        io.to(roomId).emit("projectileSpawn", proj);
     });
 
     socket.on("disconnect", () => {
         const roomId = socket.data.roomId;
         if (!roomId) return;
-
         const room = rooms[roomId];
         if (!room) return;
 
@@ -674,15 +779,24 @@ io.on("connection", (socket) => {
             socket.to(roomId).emit("playerLeft", { id: socket.id });
         }
 
+        if (room.hostId === socket.id) {
+            const remaining = Object.keys(room.players);
+            room.hostId = remaining[0] || null;
+            io.to(roomId).emit("hostUpdate", { hostId: room.hostId });
+        }
+
         clearRoomTimers(room);
         clearProjectiles(roomId);
 
-        const count = Object.keys(room.players).length;
-        if (count === 0) {
+        if (!Object.keys(room.players).length) {
             delete rooms[roomId];
-        } else {
+        } else if (room.state !== "waiting" && room.state !== "round_over") {
             room.state = "waiting";
-            io.to(roomId).emit("roundState", { state: "waiting" });
+            io.to(roomId).emit("roundState", {
+                state: "waiting",
+                hostId: room.hostId,
+                cacti: room.cacti
+            });
         }
 
         broadcastRoomsUpdate();
