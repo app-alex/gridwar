@@ -13,6 +13,8 @@
             align-items: center;
             background: #f5f5f5;
             font-family: sans-serif;
+            touch-action: none;
+            /* prevent scroll on touch controls */
         }
 
         #wrapper {
@@ -34,6 +36,7 @@
             gap: 6px;
             align-items: center;
             font-size: 14px;
+            flex-wrap: wrap;
         }
 
         #joinForm input {
@@ -103,7 +106,10 @@
             gap: 8px;
             align-items: center;
             width: 1200px;
+            max-width: 100vw;
             justify-content: space-between;
+            padding: 0 4px;
+            box-sizing: border-box;
         }
 
         #startButton {
@@ -125,16 +131,22 @@
             border: 1px solid #999;
             background: #ffffff;
             display: none;
+            max-width: 100vw;
+            height: auto;
+            touch-action: none;
         }
 
         #cooldownWrapper {
             width: 1200px;
+            max-width: 100vw;
             height: 12px;
             font-size: 9px;
             color: #555;
             display: none;
             align-items: center;
             gap: 4px;
+            padding: 0 4px;
+            box-sizing: border-box;
         }
 
         #cooldownBarBg {
@@ -192,6 +204,14 @@
             text-align: center;
         }
 
+        #touchHint {
+            display: none;
+            font-size: 10px;
+            color: #555;
+            text-align: center;
+            max-width: 1200px;
+        }
+
         #announcement {
             position: fixed;
             top: 50%;
@@ -200,7 +220,7 @@
             padding: 8px 16px;
             border-radius: 6px;
             background: rgba(255, 255, 255, 0.9);
-            font-size: 28px;
+            font-size: 22px;
             font-weight: 700;
             color: #222;
             text-align: center;
@@ -209,11 +229,37 @@
             opacity: 0;
             transition: opacity 0.2s;
             z-index: 999;
-            min-width: 260px;
+            min-width: 220px;
         }
 
         #announcement.visible {
             opacity: 1;
+        }
+
+        #touchFeedback {
+            position: fixed;
+            background: rgba(30, 144, 255, 0.12);
+            border: 1px solid rgba(30, 144, 255, 0.35);
+            border-radius: 10px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s ease-out;
+            z-index: 900;
+        }
+
+        @media (max-width: 768px) {
+            #topRow {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            #controlsRow {
+                width: 100vw;
+            }
+
+            #cooldownWrapper {
+                width: 100vw;
+            }
         }
     </style>
 </head>
@@ -244,7 +290,7 @@
             <button id="startButton">Start Round</button>
         </div>
 
-        <!-- 40 x 18 tiles, 30px each -->
+        <!-- 40 x 18 tiles, designed for 1200x540 -->
         <canvas id="game" width="1200" height="540"></canvas>
 
         <div id="cooldownWrapper">
@@ -258,13 +304,18 @@
         <div id="scoreboard"></div>
 
         <div id="info">
-            Create or join a room. First player becomes host. Host starts rounds (≥2 players).<br />
-            Last player standing gets +1 point. Arrows: move. Space: shoot.<br />
-            Terrain: black walls (solid), black+gold walls (reflect bullets), pixel-hole pits (instant death), black
-            star spikes (-1 HP), green cacti that split a bullet once.
+            Desktop: Arrows to move, Space to shoot. Host starts rounds (≥2 players). Last player standing gets 1
+            point.<br />
+            Terrain: black walls (solid), black+gold walls (reflect bullets), X spikes (-1 HP), green cactus that splits
+            a bullet once and then becomes solid.
+        </div>
+
+        <div id="touchHint">
+            Touch: tap top/bottom bands to move up/down, side bands (middle area) to move left/right, center to shoot.
         </div>
 
         <div id="announcement"></div>
+        <div id="touchFeedback"></div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -287,7 +338,6 @@
 
         let walls = [];
         let reflectWalls = [];
-        let holes = [];
         let spikes = [];
         let cacti = [];
 
@@ -311,9 +361,89 @@
         const cooldownWrapper = document.getElementById("cooldownWrapper");
         const cooldownBarFill = document.getElementById("cooldownBarFill");
         const cooldownText = document.getElementById("cooldownText");
+        const touchHint = document.getElementById("touchHint");
+        const touchFeedbackEl = document.getElementById("touchFeedback");
 
         let countdownStartTime = null;
         let countdownDuration = 0;
+        let touchFeedbackTimeout = null;
+
+        const isTouchDevice =
+            "ontouchstart" in window ||
+            navigator.maxTouchPoints > 0 ||
+            navigator.msMaxTouchPoints > 0;
+
+        if (isTouchDevice) {
+            touchHint.style.display = "block";
+        }
+
+        // --- TOUCH FEEDBACK ---
+
+        function showTouchFeedback(kind, dir, marginX, marginY) {
+            if (!touchFeedbackEl) return;
+
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+
+            let left = 0,
+                top = 0,
+                width = 0,
+                height = 0;
+            let radius = 10;
+
+            if (kind === "move") {
+                if (dir === "up") {
+                    // Full-width top band
+                    left = 0;
+                    top = 0;
+                    width = vw;
+                    height = marginY;
+                    radius = 0;
+                } else if (dir === "down") {
+                    // Full-width bottom band
+                    left = 0;
+                    top = vh - marginY;
+                    width = vw;
+                    height = marginY;
+                    radius = 0;
+                } else if (dir === "left") {
+                    // Left band only in middle vertical region
+                    left = 0;
+                    top = marginY;
+                    width = marginX;
+                    height = vh - 2 * marginY;
+                    radius = 0;
+                } else if (dir === "right") {
+                    // Right band only in middle vertical region
+                    left = vw - marginX;
+                    top = marginY;
+                    width = marginX;
+                    height = vh - 2 * marginY;
+                    radius = 0;
+                }
+            } else if (kind === "shoot") {
+                // Center = between all bands
+                left = marginX;
+                top = marginY;
+                width = vw - 2 * marginX;
+                height = vh - 2 * marginY;
+                radius = 16;
+            }
+
+            touchFeedbackEl.style.left = left + "px";
+            touchFeedbackEl.style.top = top + "px";
+            touchFeedbackEl.style.width = width + "px";
+            touchFeedbackEl.style.height = height + "px";
+            touchFeedbackEl.style.borderRadius = radius + "px";
+            touchFeedbackEl.style.opacity = "1";
+
+            if (touchFeedbackTimeout) {
+                clearTimeout(touchFeedbackTimeout);
+            }
+            touchFeedbackTimeout = setTimeout(() => {
+                touchFeedbackEl.style.opacity = "0";
+            }, 120);
+        }
 
         // --- SOCKET INIT ---
 
@@ -369,7 +499,6 @@
 
             walls = data.walls || [];
             reflectWalls = data.reflectWalls || [];
-            holes = data.holes || [];
             spikes = data.spikes || [];
             cacti = (data.cacti || []).map(c => ({
                 ...c
@@ -388,10 +517,12 @@
             canvas.style.display = "block";
             cooldownWrapper.style.display = "flex";
 
-            // Hide lobby UI inside room
             joinForm.style.display = "none";
             roomsContainer.style.display = "none";
-            infoDiv.style.display = "none";
+            if (isTouchDevice) {
+                infoDiv.style.display = "none";
+                touchHint.style.display = "block";
+            }
 
             renderScoreboard();
             renderStatus();
@@ -584,6 +715,7 @@
         }) => {
             gameState = state;
             if (typeof newHost !== "undefined") hostId = newHost;
+
             if (serverPlayers) {
                 for (const id in players) delete players[id];
                 Object.assign(players, serverPlayers);
@@ -652,7 +784,7 @@
             renderHostControls();
         });
 
-        // --- INPUT ---
+        // --- INPUT: KEYBOARD ---
 
         window.addEventListener("keydown", e => {
             if (!joined || !socket) return;
@@ -676,10 +808,78 @@
             if (e.code === "Space") {
                 e.preventDefault();
                 const bullets = me.bulletsLoaded ?? 0;
-                if (bullets <= 0) return;
-                socket.emit("shoot");
+                if (bullets > 0) socket.emit("shoot");
             }
         });
+
+        // --- INPUT: TOUCH ---
+
+        if (isTouchDevice) {
+            document.addEventListener("touchstart", handleTouchStart, {
+                passive: false
+            });
+        }
+
+        function handleTouchStart(e) {
+            if (!joined || !socket) return;
+            if (gameState !== "playing") return;
+
+            const me = players[yourId];
+            if (!me || me.hp <= 0) return;
+
+            const touch = e.touches[0];
+            if (!touch) return;
+
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const x = touch.clientX;
+            const y = touch.clientY;
+
+            const marginX = vw * 0.22;
+            const marginY = vh * 0.22;
+
+            const inTopBand = y < marginY;
+            const inBottomBand = y > vh - marginY;
+            const inMiddleY = y >= marginY && y <= vh - marginY;
+            const inLeftBand = x < marginX;
+            const inRightBand = x > vw - marginX;
+
+            let action = null;
+            let dir = null;
+
+            if (inTopBand) {
+                action = "move";
+                dir = "up";
+            } else if (inBottomBand) {
+                action = "move";
+                dir = "down";
+            } else if (inMiddleY && inLeftBand) {
+                action = "move";
+                dir = "left";
+            } else if (inMiddleY && inRightBand) {
+                action = "move";
+                dir = "right";
+            } else {
+                action = "shoot";
+            }
+
+            if (action === "move") {
+                e.preventDefault();
+                socket.emit("move", {
+                    direction: dir
+                });
+                showTouchFeedback("move", dir, marginX, marginY);
+            } else if (action === "shoot") {
+                e.preventDefault();
+                const bullets = me.bulletsLoaded ?? 0;
+                if (bullets > 0) {
+                    socket.emit("shoot");
+                }
+                showTouchFeedback("shoot", null, marginX, marginY);
+            }
+        }
+
+        // --- HOST BUTTON ---
 
         startButton.addEventListener("click", () => {
             if (!socket) return;
@@ -846,12 +1046,10 @@
                 ctx.stroke();
             });
 
-            // Cacti: almost full tile, with bullet pods sticking out a bit
+            // Cacti: inset body, bullet pods sticking out if unused
             cacti.forEach(c => {
                 const x = c.x * TILE_SIZE;
                 const y = c.y * TILE_SIZE;
-
-                // slightly inset body so pods can pop out
                 const pad = TILE_SIZE * 0.14;
                 const bodyX = x + pad;
                 const bodyY = y + pad;
@@ -866,14 +1064,13 @@
                     const bLen = TILE_SIZE * 0.46;
                     const bThick = TILE_SIZE * 0.12;
 
-                    // Up (extends slightly above body)
+                    // Up
                     ctx.fillRect(
                         x + TILE_SIZE / 2 - bThick / 2,
                         bodyY - bLen * 0.35,
                         bThick,
                         bLen
                     );
-
                     // Down
                     ctx.fillRect(
                         x + TILE_SIZE / 2 - bThick / 2,
@@ -881,7 +1078,6 @@
                         bThick,
                         bLen
                     );
-
                     // Left
                     ctx.fillRect(
                         bodyX - bLen * 0.35,
@@ -889,7 +1085,6 @@
                         bLen,
                         bThick
                     );
-
                     // Right
                     ctx.fillRect(
                         bodyX + bodyW - bLen * 0.65,
@@ -901,7 +1096,7 @@
             });
         }
 
-        // --- PLAYER DRAW ---
+        // --- PLAYER RENDER (rounded back corners) ---
 
         function drawTrianglePlayer(id, gridX, gridY, jumpOffset = 0) {
             const p = players[id];
@@ -911,7 +1106,6 @@
             const baseX = gridX * TILE_SIZE;
             const baseY = gridY * TILE_SIZE + jumpOffset;
 
-            // Highlight your tile
             if (id === yourId) {
                 ctx.fillStyle = "rgba(255, 255, 0, 0.16)";
                 ctx.fillRect(baseX, gridY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
@@ -984,7 +1178,7 @@
                     break;
             }
 
-            // Soft drop shadow (simple triangle)
+            // Shadow
             ctx.save();
             ctx.fillStyle = "rgba(0,0,0,0.18)";
             ctx.beginPath();
@@ -997,7 +1191,7 @@
 
             const radius = TILE_SIZE * 0.18;
 
-            // Rounded triangle body: sharp tip, rounded back corners
+            // Rounded triangle
             ctx.beginPath();
             ctx.moveTo(tip.x, tip.y);
             ctx.lineTo(back1.x, back1.y);
@@ -1011,14 +1205,13 @@
             ctx.fillStyle = p.hp > 0 ? baseColor : "#7f8c8d";
             ctx.fill();
 
-            // Extra outline for your player
             if (id === yourId) {
                 ctx.lineWidth = 3;
                 ctx.strokeStyle = "#000";
                 ctx.stroke();
             }
 
-            // Segmented HP bar (5)
+            // HP segments
             const maxHp = 5;
             const hp = Math.max(0, Math.min(maxHp, p.hp || 0));
             const segments = 5;
@@ -1039,7 +1232,6 @@
                 }
             }
 
-            // Name
             if (p.name) {
                 ctx.font = "10px sans-serif";
                 ctx.fillStyle = "#333";
@@ -1048,10 +1240,9 @@
             }
         }
 
-        // --- PROJECTILES DRAW ---
+        // --- PROJECTILES RENDER ---
 
         function drawProjectiles(now) {
-            // Group by tile+direction for stacks
             const groups = {};
             for (const id in projectiles) {
                 const p = projectiles[id];
@@ -1106,7 +1297,6 @@
             });
             ctx.restore();
 
-            // Impact flashes
             const keep = [];
             impactEffects.forEach(effect => {
                 const t = now - effect.startTime;
